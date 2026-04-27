@@ -55,8 +55,8 @@ typedef enum {
     BTN_Z_INSERT_PREV, BTN_Z_INSERT_NEXT,
     BTN_MOVE_LEFT, BTN_MOVE_RIGHT, BTN_MOVE_UP, BTN_MOVE_DOWN,
     BTN_RESET_ALL,
-    BTN_UNMINIMIZE, BTN_ACTIVATE, BTN_SET_ATTENTION, BTN_CLEAR_ATTENTION,
-    BTN_AUTO_ACTIVATE,
+    BTN_ACTIVATE_DELAY, BTN_SET_ATTENTION, BTN_CLEAR_ATTENTION,
+    BTN_MINIMIZE_AND_ACTIVATE,
     BTN_COUNT
 } BtnAction;
 
@@ -97,8 +97,9 @@ typedef struct {
     bool        running;
 
     /* auto-activate timer */
-    uint64_t    minimize_time_ms;  /* SDL_GetTicks64() when minimized, 0 if not */
-    bool        auto_activate_pending;
+    uint64_t    activate_delay_start_ms;  /* SDL_GetTicks() when delay started, 0 if not active */
+    bool        activate_delay_pending;
+    bool        need_unminimize_before_activate;  /* true if should unminimize before activate */
 
     /* UI buttons */
     Button      buttons[BTN_COUNT];
@@ -177,23 +178,11 @@ static void wine_state_state_changed(void *data,
     (void)state;
     WineWindow *w = data;
     
-    bool was_minimized = w->minimized;
     w->minimized = (state_flags & TREELAND_WINE_WINDOW_STATE_V1_STATE_MINIMIZED) != 0;
     w->attention = (state_flags & TREELAND_WINE_WINDOW_STATE_V1_STATE_ATTENTION) != 0;
     
     SDL_Log("[win%d] state_changed: minimized=%d attention=%d",
         w->index, w->minimized, w->attention);
-    
-    /* Track minimize time for auto-activate */
-    if (w->minimized && !was_minimized) {
-        w->minimize_time_ms = SDL_GetTicks();
-        SDL_Log("[win%d] Window minimized at t=%llu ms", w->index, 
-            (unsigned long long)w->minimize_time_ms);
-    } else if (!w->minimized && was_minimized) {
-        w->minimize_time_ms = 0;
-        w->auto_activate_pending = false;
-        SDL_Log("[win%d] Window restored", w->index);
-    }
 }
 
 static void wine_state_activate_denied(void *data,
@@ -295,14 +284,13 @@ static void init_buttons(WineWindow *w)
     w->buttons[BTN_MOVE_DOWN]      = (Button){{ col[3], py,       BW, BH }, "Move Y+20",    BTN_MOVE_DOWN };
     py += BH + PAD;
     /* Row 3: state control */
-    w->buttons[BTN_UNMINIMIZE]     = (Button){{ col[0], py,       BW, BH }, "Unminimize",   BTN_UNMINIMIZE };
-    w->buttons[BTN_ACTIVATE]       = (Button){{ col[1], py,       BW, BH }, "Activate",     BTN_ACTIVATE };
-    w->buttons[BTN_SET_ATTENTION]  = (Button){{ col[2], py,       BW, BH }, "Attention",    BTN_SET_ATTENTION };
-    w->buttons[BTN_CLEAR_ATTENTION]= (Button){{ col[3], py,       BW, BH }, "Clear Attn",   BTN_CLEAR_ATTENTION };
+    w->buttons[BTN_ACTIVATE_DELAY] = (Button){{ col[0], py,       BW, BH }, "Act 5s",       BTN_ACTIVATE_DELAY };
+    w->buttons[BTN_SET_ATTENTION]  = (Button){{ col[1], py,       BW, BH }, "Attention",    BTN_SET_ATTENTION };
+    w->buttons[BTN_CLEAR_ATTENTION]= (Button){{ col[2], py,       BW, BH }, "Clear Attn",   BTN_CLEAR_ATTENTION };
+    w->buttons[BTN_MINIMIZE_AND_ACTIVATE] = (Button){{ col[3], py, BW, BH }, "Min+Act5s",   BTN_MINIMIZE_AND_ACTIVATE };
     py += BH + PAD;
-    /* Row 4: reset & auto-activate */
-    w->buttons[BTN_RESET_ALL]      = (Button){{ PAD,    py, BW*2.f+PAD, BH }, "Reset All", BTN_RESET_ALL };
-    w->buttons[BTN_AUTO_ACTIVATE]  = (Button){{ col[2], py, BW*2.f+PAD, BH }, "Auto-Act 5s", BTN_AUTO_ACTIVATE };
+    /* Row 4: reset */
+    w->buttons[BTN_RESET_ALL]      = (Button){{ PAD,    py, (float)WINDOW_W - PAD*2.f, BH }, "Reset All", BTN_RESET_ALL };
 }
 
 static void draw_button(SDL_Renderer *rend, const Button *b)
@@ -364,7 +352,7 @@ static void draw_window(WineWindow *w)
     SDL_RenderDebugText(rend, 20.f, 54.f, line);
     snprintf(line, sizeof line, "req     x=%-5d y=%d", w->req_x, w->req_y);
     SDL_RenderDebugText(rend, 20.f, 70.f, line);
-    SDL_RenderDebugText(rend, 20.f, 90.f, "Keys: M U A F  T N B Up  Ctrl+Arrows  R=reset  Q=quit");
+    SDL_RenderDebugText(rend, 20.f, 90.f, "Keys: M A F  T N B Up  Ctrl+Arrows  R=reset  Q=quit");
     SDL_RenderDebugText(rend, 20.f, 106.f, "Mouse: click buttons below");
 
     /* ---- panel area ---- */
@@ -395,6 +383,12 @@ static void do_set_position(WineWindow *w, int x, int y)
     treeland_wine_window_control_v1_set_position(w->wine_control, x, y);
     SDL_Log("[win%d] set_position x=%d y=%d", w->index, x, y);
 }
+
+/* NOTE: Move operations use actual_x/actual_y (compositor-reported position)
+ * rather than req_x/req_y (last requested position) to ensure moves are
+ * relative to the current real position, not stale request values. This
+ * handles cases where the compositor adjusts position or the window is moved
+ * externally. */
 
 static void do_set_z_order(WineWindow *w, uint32_t op, uint32_t sibling_id)
 {
@@ -464,15 +458,15 @@ static void handle_button_action(AppState *app, WineWindow *w, BtnAction action)
             do_set_z_order(w, TREELAND_WINE_WINDOW_CONTROL_V1_Z_ORDER_OP_HWND_INSERT_AFTER, sib->window_id);
         break;
     }
-    case BTN_MOVE_LEFT:  do_set_position(w, w->req_x - MOVE_STEP, w->req_y); break;
-    case BTN_MOVE_RIGHT: do_set_position(w, w->req_x + MOVE_STEP, w->req_y); break;
-    case BTN_MOVE_UP:    do_set_position(w, w->req_x, w->req_y - MOVE_STEP); break;
-    case BTN_MOVE_DOWN:  do_set_position(w, w->req_x, w->req_y + MOVE_STEP); break;
-    case BTN_UNMINIMIZE:
-        do_unminimize(w);
-        break;
-    case BTN_ACTIVATE:
-        do_activate(w, TREELAND_WINE_WINDOW_STATE_V1_ACTIVATE_REASON_USER_REQUEST);
+    case BTN_MOVE_LEFT:  do_set_position(w, w->actual_x - MOVE_STEP, w->actual_y); break;
+    case BTN_MOVE_RIGHT: do_set_position(w, w->actual_x + MOVE_STEP, w->actual_y); break;
+    case BTN_MOVE_UP:    do_set_position(w, w->actual_x, w->actual_y - MOVE_STEP); break;
+    case BTN_MOVE_DOWN:  do_set_position(w, w->actual_x, w->actual_y + MOVE_STEP); break;
+    case BTN_ACTIVATE_DELAY:
+        w->activate_delay_pending = true;
+        w->activate_delay_start_ms = SDL_GetTicks();
+        w->need_unminimize_before_activate = false;
+        SDL_Log("[win%d] Activate scheduled in 5 seconds", w->index);
         break;
     case BTN_SET_ATTENTION:
         do_set_attention(w, 0, 500);  /* flash indefinitely, 500ms interval */
@@ -480,14 +474,12 @@ static void handle_button_action(AppState *app, WineWindow *w, BtnAction action)
     case BTN_CLEAR_ATTENTION:
         do_clear_attention(w);
         break;
-    case BTN_AUTO_ACTIVATE:
-        if (w->minimized) {
-            w->auto_activate_pending = true;
-            w->minimize_time_ms = SDL_GetTicks();
-            SDL_Log("[win%d] Auto-activate scheduled in 5 seconds", w->index);
-        } else {
-            SDL_Log("[win%d] Window not minimized, minimize it first", w->index);
-        }
+    case BTN_MINIMIZE_AND_ACTIVATE:
+        SDL_MinimizeWindow(w->sdl_window);
+        w->activate_delay_pending = true;
+        w->activate_delay_start_ms = SDL_GetTicks();
+        w->need_unminimize_before_activate = true;
+        SDL_Log("[win%d] Minimized, will unminimize then activate in 5 seconds", w->index);
         break;
     case BTN_RESET_ALL:
         for (int i = 0; i < app->nwindows; ++i)
@@ -698,13 +690,13 @@ static void handle_key(AppState *app, WineWindow *w, SDL_Keycode key, SDL_Keymod
         if (!ctrl) {
             do_set_z_order(w, TREELAND_WINE_WINDOW_CONTROL_V1_Z_ORDER_OP_HWND_TOP, 0);
         } else {
-            do_set_position(w, w->req_x, w->req_y - MOVE_STEP);
+            do_set_position(w, w->actual_x, w->actual_y - MOVE_STEP);
         }
         break;
 
     case SDLK_DOWN:
         if (ctrl)
-            do_set_position(w, w->req_x, w->req_y + MOVE_STEP);
+            do_set_position(w, w->actual_x, w->actual_y + MOVE_STEP);
         break;
 
     case SDLK_LEFT:
@@ -718,7 +710,7 @@ static void handle_key(AppState *app, WineWindow *w, SDL_Keycode key, SDL_Keymod
                     sib->window_id);
             }
         } else {
-            do_set_position(w, w->req_x - MOVE_STEP, w->req_y);
+            do_set_position(w, w->actual_x - MOVE_STEP, w->actual_y);
         }
         break;
 
@@ -733,7 +725,7 @@ static void handle_key(AppState *app, WineWindow *w, SDL_Keycode key, SDL_Keymod
                     sib->window_id);
             }
         } else {
-            do_set_position(w, w->req_x + MOVE_STEP, w->req_y);
+            do_set_position(w, w->actual_x + MOVE_STEP, w->actual_y);
         }
         break;
 
@@ -754,14 +746,12 @@ static void handle_key(AppState *app, WineWindow *w, SDL_Keycode key, SDL_Keymod
         SDL_Log("[win%d] Minimized via SDL", w->index);
         break;
 
-    case SDLK_U:
-        /* Unminimize */
-        do_unminimize(w);
-        break;
-
     case SDLK_A:
-        /* Activate */
-        do_activate(w, TREELAND_WINE_WINDOW_STATE_V1_ACTIVATE_REASON_USER_REQUEST);
+        /* Activate with 5s delay */
+        w->activate_delay_pending = true;
+        w->activate_delay_start_ms = SDL_GetTicks();
+        w->need_unminimize_before_activate = false;
+        SDL_Log("[win%d] Activate scheduled in 5 seconds", w->index);
         break;
 
     case SDLK_F:
@@ -774,8 +764,7 @@ static void handle_key(AppState *app, WineWindow *w, SDL_Keycode key, SDL_Keymod
         SDL_Log("─────────── Key bindings ───────────");
         SDL_Log("  Q / Escape  : quit");
         SDL_Log("  M           : minimize (SDL)");
-        SDL_Log("  U           : unminimize");
-        SDL_Log("  A           : activate");
+        SDL_Log("  A           : activate (5s delay)");
         SDL_Log("  F           : set attention (flash)");
         SDL_Log("  T           : HWND_TOPMOST");
         SDL_Log("  N           : HWND_NOTOPMOST");
@@ -809,12 +798,16 @@ static void process_events(AppState *app)
                 for (int i = 0; i < app->nwindows; ++i)
                     app->windows[i].focused = false;
                 w->focused = true;
+                SDL_Log("[win%d] Focus GAINED (activated)", w->index);
             }
             break;
         }
         case SDL_EVENT_WINDOW_FOCUS_LOST: {
             WineWindow *w = find_window(app, ev.window.windowID);
-            if (w) w->focused = false;
+            if (w) {
+                w->focused = false;
+                SDL_Log("[win%d] Focus LOST (deactivated)", w->index);
+            }
             break;
         }
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED: {
@@ -982,17 +975,26 @@ int main(int argc, char **argv)
             if (app.windows[i].running) { all_closed = false; break; }
         if (all_closed) break;
 
-        /* check auto-activate timers */
+        /* check activate delay timers */
         uint64_t now = SDL_GetTicks();
         for (int i = 0; i < app.nwindows; ++i) {
             WineWindow *w = &app.windows[i];
-            if (w->auto_activate_pending && w->minimized && w->minimize_time_ms > 0) {
-                uint64_t elapsed = now - w->minimize_time_ms;
+            if (w->activate_delay_pending && w->activate_delay_start_ms > 0) {
+                uint64_t elapsed = now - w->activate_delay_start_ms;
                 if (elapsed >= AUTO_ACTIVATE_DELAY_MS) {
-                    SDL_Log("[win%d] Auto-activate triggered after %llu ms",
+                    SDL_Log("[win%d] Activate triggered after %llu ms",
                         w->index, (unsigned long long)elapsed);
+                    
+                    /* Unminimize first if needed */
+                    if (w->need_unminimize_before_activate) {
+                        SDL_Log("[win%d] Unminimizing before activate", w->index);
+                        do_unminimize(w);
+                        w->need_unminimize_before_activate = false;
+                    }
+                    
                     do_activate(w, TREELAND_WINE_WINDOW_STATE_V1_ACTIVATE_REASON_RESTORE);
-                    w->auto_activate_pending = false;
+                    w->activate_delay_pending = false;
+                    w->activate_delay_start_ms = 0;
                 }
             }
         }
