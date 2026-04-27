@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(test_wine_window_management LANGUAGES C)
+project(test_wine_window LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -32,29 +32,44 @@ add_custom_command(OUTPUT "${XDG_SHELL_C}"
     DEPENDS "${XDG_SHELL_XML}" VERBATIM)
 
 # ── treeland-wine-window-management-unstable-v1 ────────────────────────────
-set(WINE_XML "${CMAKE_CURRENT_SOURCE_DIR}/protocols/treeland-wine-window-management-unstable-v1.xml")
-set(WINE_H   "${GENERATED_DIR}/treeland-wine-window-management-unstable-v1-client-protocol.h")
-set(WINE_C   "${GENERATED_DIR}/treeland-wine-window-management-unstable-v1-protocol.c")
+set(WINE_MGMT_XML "${CMAKE_CURRENT_SOURCE_DIR}/protocols/treeland-wine-window-management-unstable-v1.xml")
+set(WINE_MGMT_H   "${GENERATED_DIR}/treeland-wine-window-management-unstable-v1-client-protocol.h")
+set(WINE_MGMT_C   "${GENERATED_DIR}/treeland-wine-window-management-unstable-v1-protocol.c")
 
-add_custom_command(OUTPUT "${WINE_H}"
-    COMMAND "${WAYLAND_SCANNER}" client-header "${WINE_XML}" "${WINE_H}"
-    DEPENDS "${WINE_XML}" VERBATIM)
+add_custom_command(OUTPUT "${WINE_MGMT_H}"
+    COMMAND "${WAYLAND_SCANNER}" client-header "${WINE_MGMT_XML}" "${WINE_MGMT_H}"
+    DEPENDS "${WINE_MGMT_XML}" VERBATIM)
 
-add_custom_command(OUTPUT "${WINE_C}"
-    COMMAND "${WAYLAND_SCANNER}" private-code  "${WINE_XML}" "${WINE_C}"
-    DEPENDS "${WINE_XML}" VERBATIM)
+add_custom_command(OUTPUT "${WINE_MGMT_C}"
+    COMMAND "${WAYLAND_SCANNER}" private-code  "${WINE_MGMT_XML}" "${WINE_MGMT_C}"
+    DEPENDS "${WINE_MGMT_XML}" VERBATIM)
+
+# ── treeland-wine-window-state-unstable-v1 ─────────────────────────────────
+set(WINE_STATE_XML "${CMAKE_CURRENT_SOURCE_DIR}/protocols/treeland-wine-window-state-unstable-v1.xml")
+set(WINE_STATE_H   "${GENERATED_DIR}/treeland-wine-window-state-unstable-v1-client-protocol.h")
+set(WINE_STATE_C   "${GENERATED_DIR}/treeland-wine-window-state-unstable-v1-protocol.c")
+
+add_custom_command(OUTPUT "${WINE_STATE_H}"
+    COMMAND "${WAYLAND_SCANNER}" client-header "${WINE_STATE_XML}" "${WINE_STATE_H}"
+    DEPENDS "${WINE_STATE_XML}" VERBATIM)
+
+add_custom_command(OUTPUT "${WINE_STATE_C}"
+    COMMAND "${WAYLAND_SCANNER}" private-code  "${WINE_STATE_XML}" "${WINE_STATE_C}"
+    DEPENDS "${WINE_STATE_XML}" VERBATIM)
 
 # ── executable ─────────────────────────────────────────────────────────────
-add_executable(test-wine-window-management
+add_executable(test-wine-window
     src/main.c
     "${XDG_SHELL_H}"
     "${XDG_SHELL_C}"
-    "${WINE_H}"
-    "${WINE_C}"
+    "${WINE_MGMT_H}"
+    "${WINE_MGMT_C}"
+    "${WINE_STATE_H}"
+    "${WINE_STATE_C}"
 )
 
-target_include_directories(test-wine-window-management PRIVATE "${GENERATED_DIR}")
-target_link_libraries(test-wine-window-management
+target_include_directories(test-wine-window PRIVATE "${GENERATED_DIR}")
+target_link_libraries(test-wine-window
     PRIVATE
         SDL3::SDL3
         PkgConfig::WAYLAND_CLIENT

@@ -8,7 +8,7 @@
  *   test-wine-window-management [options]
  *
  * Options:
- *   --count N        open N windows (default: 2)
+ *   --count N        open N windows (default: 1)
  *   --pos  X,Y       initial position for the first window (default: 100,100)
  *   --gap  PX        pixel gap between windows (default: 60)
  *   --help           show this help
@@ -687,7 +687,7 @@ static void print_usage(const char *argv0)
 {
     fprintf(stderr,
         "Usage: %s [options]\n"
-        "  --count N      number of windows to open (1..%d, default 2)\n"
+        "  --count N      number of windows to open (1..%d, default 1)\n"
         "  --pos  X,Y     initial position for window 0 (default 100,100)\n"
         "  --gap  PX      horizontal gap between windows (default %d)\n"
         "  --help         show this help\n"
@@ -703,7 +703,7 @@ static void print_usage(const char *argv0)
 
 int main(int argc, char **argv)
 {
-    int   nwindows = 2;
+    int   nwindows = 1;
     int   base_x   = 100, base_y = 100;
     int   gap       = DEFAULT_GAP;
 
