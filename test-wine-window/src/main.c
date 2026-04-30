@@ -887,7 +887,14 @@ int main(int argc, char **argv)
             print_usage(argv[0]);
             return 0;
         } else if (strcmp(argv[i], "--count") == 0 && i + 1 < argc) {
-            nwindows = SDL_clamp((int)strtol(argv[++i], NULL, 10), 1, MAX_WINDOWS);
+            long parsed = strtol(argv[++i], NULL, 10);
+            if (parsed < 1) {
+                nwindows = 1;
+            } else if (parsed > MAX_WINDOWS) {
+                nwindows = MAX_WINDOWS;
+            } else {
+                nwindows = (int)parsed;
+            }
         } else if (strcmp(argv[i], "--pos") == 0 && i + 1 < argc) {
             sscanf(argv[++i], "%d,%d", &base_x, &base_y);
         } else if (strcmp(argv[i], "--gap") == 0 && i + 1 < argc) {
