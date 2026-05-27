@@ -9,16 +9,21 @@ find_package(PkgConfig REQUIRED)
 find_package(SDL3 REQUIRED CONFIG)
 
 pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
+pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED wayland-protocols)
 pkg_get_variable(WAYLAND_SCANNER wayland-scanner wayland_scanner)
 if(NOT WAYLAND_SCANNER)
     find_program(WAYLAND_SCANNER_EXECUTABLE wayland-scanner REQUIRED)
     set(WAYLAND_SCANNER "${WAYLAND_SCANNER_EXECUTABLE}")
 endif()
 
-set(PROTOCOL_XML "${CMAKE_CURRENT_SOURCE_DIR}/protocols/xdg-foreign-unstable-v2.xml")
+set(PROTOCOL_XML "${WAYLAND_PROTOCOLS_PREFIX}/share/wayland-protocols/unstable/xdg-foreign/xdg-foreign-unstable-v2.xml")
 set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(PROTOCOL_HEADER "${GENERATED_DIR}/xdg-foreign-unstable-v2-client-protocol.h")
 set(PROTOCOL_CODE "${GENERATED_DIR}/xdg-foreign-unstable-v2-protocol.c")
+
+if(NOT EXISTS "${PROTOCOL_XML}")
+    message(FATAL_ERROR "xdg-foreign protocol not found: ${PROTOCOL_XML}")
+endif()
 
 file(MAKE_DIRECTORY "${GENERATED_DIR}")
 

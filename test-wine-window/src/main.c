@@ -118,6 +118,7 @@ struct AppState {
 
     bool        any_running;
     uint32_t    activate_serial;  /* for tracking activate requests */
+    uint32_t    position_serial;  /* for tracking position requests */
 };
 
 /* ─────────────────────────────────────────── helpers ──── */
@@ -146,13 +147,13 @@ static void wine_control_window_id(void *data,
 }
 
 static void wine_control_configure_position(void *data,
-    struct treeland_wine_window_control_v1 *ctrl, int32_t x, int32_t y)
+    struct treeland_wine_window_control_v1 *ctrl, int32_t x, int32_t y, uint32_t serial)
 {
     (void)ctrl;
     WineWindow *w = data;
     w->actual_x = x;
     w->actual_y = y;
-    SDL_Log("[win%d] configure_position x=%d y=%d", w->index, x, y);
+    SDL_Log("[win%d] configure_position x=%d y=%d serial=%u", w->index, x, y, serial);
 }
 
 static void wine_control_configure_stacking(void *data,
@@ -380,8 +381,9 @@ static void do_set_position(WineWindow *w, int x, int y)
     if (!w->wine_control) return;
     w->req_x = x;
     w->req_y = y;
-    treeland_wine_window_control_v1_set_position(w->wine_control, x, y);
-    SDL_Log("[win%d] set_position x=%d y=%d", w->index, x, y);
+    uint32_t serial = ++w->app->position_serial;
+    treeland_wine_window_control_v1_set_position(w->wine_control, x, y, serial);
+    SDL_Log("[win%d] set_position x=%d y=%d serial=%u", w->index, x, y, serial);
 }
 
 /* NOTE: Move operations use actual_x/actual_y (compositor-reported position)

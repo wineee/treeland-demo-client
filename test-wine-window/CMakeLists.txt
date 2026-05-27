@@ -7,8 +7,10 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 find_package(PkgConfig REQUIRED)
 find_package(SDL3 REQUIRED CONFIG)
+find_package(TreelandProtocols REQUIRED CONFIG)
 
 pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
+pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED wayland-protocols)
 pkg_get_variable(WAYLAND_SCANNER wayland-scanner wayland_scanner)
 if(NOT WAYLAND_SCANNER)
     find_program(WAYLAND_SCANNER_EXECUTABLE wayland-scanner REQUIRED)
@@ -18,8 +20,22 @@ endif()
 set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${GENERATED_DIR}")
 
+# ── protocol XML from system packages ─────────────────────────────────────
+set(XDG_SHELL_XML "${WAYLAND_PROTOCOLS_PREFIX}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml")
+set(WINE_MGMT_XML "${TREELAND_PROTOCOLS_DATA_DIR}/treeland-wine-window-management-unstable-v1.xml")
+set(WINE_STATE_XML "${TREELAND_PROTOCOLS_DATA_DIR}/treeland-wine-window-state-unstable-v1.xml")
+
+if(NOT EXISTS "${XDG_SHELL_XML}")
+    message(FATAL_ERROR "xdg-shell.xml not found: ${XDG_SHELL_XML}")
+endif()
+if(NOT EXISTS "${WINE_MGMT_XML}")
+    message(FATAL_ERROR "treeland wine management protocol not found: ${WINE_MGMT_XML}")
+endif()
+if(NOT EXISTS "${WINE_STATE_XML}")
+    message(FATAL_ERROR "treeland wine state protocol not found: ${WINE_STATE_XML}")
+endif()
+
 # ── xdg-shell ──────────────────────────────────────────────────────────────
-set(XDG_SHELL_XML "${CMAKE_CURRENT_SOURCE_DIR}/protocols/xdg-shell.xml")
 set(XDG_SHELL_H   "${GENERATED_DIR}/xdg-shell-client-protocol.h")
 set(XDG_SHELL_C   "${GENERATED_DIR}/xdg-shell-protocol.c")
 
@@ -32,7 +48,6 @@ add_custom_command(OUTPUT "${XDG_SHELL_C}"
     DEPENDS "${XDG_SHELL_XML}" VERBATIM)
 
 # ── treeland-wine-window-management-unstable-v1 ────────────────────────────
-set(WINE_MGMT_XML "${CMAKE_CURRENT_SOURCE_DIR}/protocols/treeland-wine-window-management-unstable-v1.xml")
 set(WINE_MGMT_H   "${GENERATED_DIR}/treeland-wine-window-management-unstable-v1-client-protocol.h")
 set(WINE_MGMT_C   "${GENERATED_DIR}/treeland-wine-window-management-unstable-v1-protocol.c")
 
@@ -45,7 +60,6 @@ add_custom_command(OUTPUT "${WINE_MGMT_C}"
     DEPENDS "${WINE_MGMT_XML}" VERBATIM)
 
 # ── treeland-wine-window-state-unstable-v1 ─────────────────────────────────
-set(WINE_STATE_XML "${CMAKE_CURRENT_SOURCE_DIR}/protocols/treeland-wine-window-state-unstable-v1.xml")
 set(WINE_STATE_H   "${GENERATED_DIR}/treeland-wine-window-state-unstable-v1-client-protocol.h")
 set(WINE_STATE_C   "${GENERATED_DIR}/treeland-wine-window-state-unstable-v1-protocol.c")
 
