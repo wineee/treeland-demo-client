@@ -17,3 +17,4 @@ project(treeland-demos LANGUAGES C)
 
 add_subdirectory(test-wine-window)
 add_subdirectory(test-xdg-foreign)
+add_subdirectory(test-subsurface)
