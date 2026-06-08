@@ -79,6 +79,7 @@ struct subsurface_test {
     struct wl_buffer *buffer;
     int x, y;
     bool is_desync;
+    bool is_z_toggle;
 };
 
 #define MAX_SUBS 50
@@ -93,6 +94,7 @@ static void add_subsurface(int type) {
     sub->surface = wl_compositor_create_surface(compositor);
     sub->subsurface = wl_subcompositor_get_subsurface(subcompositor, sub->surface, main_surface);
     sub->is_desync = false;
+    sub->is_z_toggle = false;
 
     // Generate random color
     uint32_t r = 50 + rand() % 200;
@@ -112,6 +114,8 @@ static void add_subsurface(int type) {
         wl_subsurface_place_above(sub->subsurface, main_surface);
     } else if (type == 3) { // Below
         wl_subsurface_place_below(sub->subsurface, main_surface);
+    } else if (type == 5) { // Z-Toggle
+        sub->is_z_toggle = true;
     }
 
     wl_subsurface_set_position(sub->subsurface, sub->x, sub->y);
@@ -146,7 +150,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    SDL_Window *window = SDL_CreateWindow("Dynamic Subsurface Demo", 800, 600, SDL_WINDOW_RESIZABLE);
+    SDL_Window *window = SDL_CreateWindow("Dynamic Subsurface Demo", 800, 600, SDL_WINDOW_RESIZABLE | SDL_WINDOW_TRANSPARENT);
     if (!window) return 1;
     SDL_Renderer *renderer = SDL_CreateRenderer(window, NULL);
 
@@ -167,11 +171,12 @@ int main(int argc, char **argv) {
     if (!subcompositor || !compositor || !shm) return 1;
 
     Button buttons[] = {
-        { { 10, 10, 110, 40 }, "Add Sync", {200, 100, 100, 255}, 0 },
-        { { 130, 10, 110, 40 }, "Add Desync", {100, 200, 100, 255}, 1 },
-        { { 250, 10, 110, 40 }, "Add Above", {100, 100, 200, 255}, 2 },
-        { { 370, 10, 110, 40 }, "Add Below", {200, 200, 100, 255}, 3 },
-        { { 490, 10, 110, 40 }, "Remove", {200, 100, 200, 255}, 4 }
+        { { 10, 10, 100, 40 }, "Sync", {200, 100, 100, 255}, 0 },
+        { { 120, 10, 100, 40 }, "Desync", {100, 200, 100, 255}, 1 },
+        { { 230, 10, 100, 40 }, "Above", {100, 100, 200, 255}, 2 },
+        { { 340, 10, 100, 40 }, "Below", {200, 200, 100, 255}, 3 },
+        { { 450, 10, 100, 40 }, "Z-Toggle", {100, 200, 200, 255}, 5 },
+        { { 560, 10, 100, 40 }, "Remove", {200, 100, 200, 255}, 4 }
     };
     int num_buttons = sizeof(buttons) / sizeof(buttons[0]);
 
@@ -206,6 +211,14 @@ int main(int argc, char **argv) {
             int y_anim = sub->y + (SDL_sin((tick + i * 10) * 0.05) * 20);
             wl_subsurface_set_position(sub->subsurface, sub->x, y_anim);
             
+            if (sub->is_z_toggle && (tick % 60 == 0)) { // Toggle Z-order roughly every 1 second (at 60fps)
+                if ((tick / 60) % 2 == 0) {
+                    wl_subsurface_place_above(sub->subsurface, main_surface);
+                } else {
+                    wl_subsurface_place_below(sub->subsurface, main_surface);
+                }
+            }
+
             // If it's desync, we must commit its surface to apply position immediately
             // If it's sync, committing it makes it pending until main surface commits
             wl_surface_commit(sub->surface);
