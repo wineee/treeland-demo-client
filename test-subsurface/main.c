@@ -80,6 +80,7 @@ struct subsurface_test {
     int x, y;
     bool is_desync;
     bool is_z_toggle;
+    bool is_static;
 };
 
 #define MAX_SUBS 50
@@ -95,6 +96,7 @@ static void add_subsurface(int type) {
     sub->subsurface = wl_subcompositor_get_subsurface(subcompositor, sub->surface, main_surface);
     sub->is_desync = false;
     sub->is_z_toggle = false;
+    sub->is_static = false;
 
     // Generate random color
     uint32_t r = 50 + rand() % 200;
@@ -103,8 +105,18 @@ static void add_subsurface(int type) {
     uint32_t color = (255 << 24) | (r << 16) | (g << 8) | b;
     
     sub->buffer = create_shm_buffer(80, 80, color);
-    sub->x = 50 + (rand() % 600);
-    sub->y = 100 + (rand() % 400);
+    
+    if (type == 6) { // Static Out-of-Bounds
+        sub->is_static = true;
+        int edge = rand() % 4;
+        if (edge == 0) { sub->x = -40; sub->y = rand() % 600; } // Left
+        else if (edge == 1) { sub->x = 760; sub->y = rand() % 600; } // Right
+        else if (edge == 2) { sub->x = rand() % 800; sub->y = -40; } // Top
+        else { sub->x = rand() % 800; sub->y = 560; } // Bottom
+    } else {
+        sub->x = 50 + (rand() % 600);
+        sub->y = 100 + (rand() % 400);
+    }
 
     // Apply type
     if (type == 1) { // Desync
@@ -176,7 +188,8 @@ int main(int argc, char **argv) {
         { { 230, 10, 100, 40 }, "Above", {100, 100, 200, 255}, 2 },
         { { 340, 10, 100, 40 }, "Below", {200, 200, 100, 255}, 3 },
         { { 450, 10, 100, 40 }, "Z-Toggle", {100, 200, 200, 255}, 5 },
-        { { 560, 10, 100, 40 }, "Remove", {200, 100, 200, 255}, 4 }
+        { { 560, 10, 100, 40 }, "Remove", {200, 100, 200, 255}, 4 },
+        { { 10, 60, 100, 40 }, "Static Out", {150, 150, 150, 255}, 6 }
     };
     int num_buttons = sizeof(buttons) / sizeof(buttons[0]);
 
@@ -208,7 +221,12 @@ int main(int argc, char **argv) {
         // Animate all subsurfaces to show they are alive
         for (int i = 0; i < sub_count; i++) {
             struct subsurface_test *sub = &subsurfaces[i];
-            int y_anim = sub->y + (SDL_sin((tick + i * 10) * 0.05) * 20);
+            
+            int y_anim = sub->y;
+            if (!sub->is_static) {
+                y_anim += (SDL_sin((tick + i * 10) * 0.05) * 20);
+            }
+            
             wl_subsurface_set_position(sub->subsurface, sub->x, y_anim);
             
             if (sub->is_z_toggle && (tick % 60 == 0)) { // Toggle Z-order roughly every 1 second (at 60fps)
