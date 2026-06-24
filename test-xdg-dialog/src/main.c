@@ -31,6 +31,7 @@ typedef struct {
     struct xdg_dialog_v1 *dialog;
     bool                modal;
     bool                alive;
+    bool                focused;
     const char         *title;
 } DialogWindow;
 
@@ -128,6 +129,15 @@ static void destroy_dialog(int index) {
     printf("[dialog %d] destroyed\n", index);
 }
 
+/* ── Check if any modal dialog is alive ───────────────── */
+static bool has_modal_dialog(void) {
+    for (int i = 0; i < MAX_DIALOGS; i++) {
+        if (dialogs[i].alive && dialogs[i].modal)
+            return true;
+    }
+    return false;
+}
+
 /* ── Button helper ─────────────────────────────────────── */
 typedef struct { SDL_FRect rect; const char *label; SDL_Color color; int id; bool hovered; } Button;
 
@@ -154,24 +164,44 @@ static void draw_dialog(DialogWindow *d) {
     if (!d->alive || !d->rend) return;
     SDL_Renderer *r = d->rend;
 
-    SDL_SetRenderDrawColor(r, 40, 40, 60, 255);
+    /* Update focus state */
+    if (d->win) {
+        SDL_WindowFlags flags = SDL_GetWindowFlags(d->win);
+        d->focused = (flags & SDL_WINDOW_INPUT_FOCUS) != 0;
+    }
+
+    /* Background color changes based on focus */
+    if (d->focused) {
+        SDL_SetRenderDrawColor(r, 50, 50, 75, 255);
+    } else {
+        SDL_SetRenderDrawColor(r, 35, 35, 50, 255);
+    }
     SDL_RenderClear(r);
 
     /* title */
     SDL_SetRenderDrawColor(r, 200, 220, 255, 255);
     SDL_RenderDebugText(r, 15, 12, d->title);
 
+    /* Focus status indicator */
+    if (d->focused) {
+        SDL_SetRenderDrawColor(r, 80, 220, 80, 255);
+        SDL_RenderDebugText(r, 250, 12, "[ FOCUSED ]");
+    } else {
+        SDL_SetRenderDrawColor(r, 150, 150, 150, 255);
+        SDL_RenderDebugText(r, 250, 12, "[ UNFOCUSED ]");
+    }
+
     /* modal badge */
     if (d->modal) {
         SDL_SetRenderDrawColor(r, 255, 180, 60, 255);
-        SDL_RenderDebugText(r, 15, 30, "[ MODAL ]");
+        SDL_RenderDebugText(r, 15, 32, "[ MODAL ]");
         SDL_SetRenderDrawColor(r, 180, 190, 210, 255);
-        SDL_RenderDebugText(r, 15, 46, "Parent window is blocked");
+        SDL_RenderDebugText(r, 15, 48, "Parent window is blocked");
     } else {
         SDL_SetRenderDrawColor(r, 100, 200, 100, 255);
-        SDL_RenderDebugText(r, 15, 30, "[ NON-MODAL ]");
+        SDL_RenderDebugText(r, 15, 32, "[ NON-MODAL ]");
         SDL_SetRenderDrawColor(r, 180, 190, 210, 255);
-        SDL_RenderDebugText(r, 15, 46, "Parent window is interactive");
+        SDL_RenderDebugText(r, 15, 48, "Parent window is interactive");
     }
 
     /* content box */
@@ -185,7 +215,30 @@ static void draw_dialog(DialogWindow *d) {
     SDL_RenderDebugText(r, 25, 85,  "This dialog uses xdg-dialog-v1");
     SDL_RenderDebugText(r, 25, 101, "protocol to hint the compositor");
     SDL_RenderDebugText(r, 25, 117, "about its dialog behavior.");
-    SDL_RenderDebugText(r, 25, 141, "Press ESC or close this window");
+
+    /* Focus details */
+    SDL_SetRenderDrawColor(r, 140, 150, 175, 255);
+    SDL_RenderDebugText(r, 25, 137, "Window state:");
+    if (d->focused) {
+        SDL_SetRenderDrawColor(r, 80, 220, 80, 255);
+        SDL_RenderDebugText(r, 25, 153, "  - Has input focus");
+        SDL_RenderDebugText(r, 25, 169, "  - Receiving keyboard events");
+    } else {
+        SDL_SetRenderDrawColor(r, 200, 150, 100, 255);
+        SDL_RenderDebugText(r, 25, 153, "  - No input focus");
+        SDL_RenderDebugText(r, 25, 169, "  - Click to focus");
+    }
+
+    /* Focus indicator bar at bottom */
+    SDL_FRect focus_bar = { 0, 230, 380, 20 };
+    if (d->focused) {
+        SDL_SetRenderDrawColor(r, 60, 140, 60, 255);
+    } else {
+        SDL_SetRenderDrawColor(r, 80, 80, 80, 255);
+    }
+    SDL_RenderFillRect(r, &focus_bar);
+    SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+    SDL_RenderDebugText(r, 10, 235, d->focused ? "ACTIVE" : "INACTIVE");
 
     SDL_RenderPresent(r);
 }
@@ -253,7 +306,27 @@ int main(int argc, char **argv) {
     while (running) {
         wl_display_flush(display);
 
+        bool modal_active = has_modal_dialog();
+
         while (SDL_PollEvent(&ev)) {
+            /* Events for dialog windows are handled by SDL automatically */
+            
+            /* Check if this event belongs to the parent window */
+            bool is_parent_event = (ev.type == SDL_EVENT_QUIT) ||
+                                   (ev.key.windowID == SDL_GetWindowID(parent_win)) ||
+                                   (ev.button.windowID == SDL_GetWindowID(parent_win)) ||
+                                   (ev.motion.windowID == SDL_GetWindowID(parent_win));
+
+            /* If modal dialog is active, block parent input events (except ESC) */
+            if (modal_active && is_parent_event) {
+                /* Allow ESC to quit even when modal */
+                if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) {
+                    running = false;
+                }
+                /* Block all other parent events */
+                continue;
+            }
+
             switch (ev.type) {
             case SDL_EVENT_QUIT:
                 running = false;
@@ -341,10 +414,17 @@ int main(int argc, char **argv) {
         for (int i = 0; i < MAX_DIALOGS; i++) {
             DialogWindow *d = &dialogs[i];
             if (d->alive) {
+                /* Update focus state */
+                if (d->win) {
+                    SDL_WindowFlags flags = SDL_GetWindowFlags(d->win);
+                    d->focused = (flags & SDL_WINDOW_INPUT_FOCUS) != 0;
+                }
+                
                 SDL_SetRenderDrawColor(parent_rend, d->modal ? 255 : 100, d->modal ? 180 : 200, 60, 255);
                 char buf[64];
-                snprintf(buf, sizeof buf, "Dialog %d: %s (%s)", i,
-                         d->modal ? "MODAL" : "NON-MODAL", "OPEN");
+                snprintf(buf, sizeof buf, "Dialog %d: %s (%s) %s", i,
+                         d->modal ? "MODAL" : "NON-MODAL", "OPEN",
+                         d->focused ? "[FOCUSED]" : "");
                 SDL_RenderDebugText(parent_rend, 285, 170 + i * 16, buf);
             } else {
                 SDL_SetRenderDrawColor(parent_rend, 120, 120, 120, 255);
@@ -370,6 +450,23 @@ int main(int argc, char **argv) {
         SDL_RenderDebugText(parent_rend, 285, 362, "a dialog relative to its");
         SDL_RenderDebugText(parent_rend, 285, 378, "parent. Modal dialogs may");
         SDL_RenderDebugText(parent_rend, 285, 394, "block parent interaction.");
+
+        /* Draw overlay when modal dialog is active */
+        if (modal_active) {
+            /* Semi-transparent dark overlay */
+            SDL_SetRenderDrawBlendMode(parent_rend, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(parent_rend, 0, 0, 0, 120);
+            SDL_FRect overlay = { 0, 0, 750, 480 };
+            SDL_RenderFillRect(parent_rend, &overlay);
+            SDL_SetRenderDrawBlendMode(parent_rend, SDL_BLENDMODE_NONE);
+
+            /* Blocked message */
+            SDL_SetRenderDrawColor(parent_rend, 255, 180, 60, 255);
+            SDL_RenderDebugText(parent_rend, 300, 230, "[ PARENT BLOCKED ]");
+            SDL_SetRenderDrawColor(parent_rend, 220, 220, 220, 255);
+            SDL_RenderDebugText(parent_rend, 280, 248, "Modal dialog is active");
+            SDL_RenderDebugText(parent_rend, 260, 264, "Close the modal dialog first");
+        }
 
         SDL_RenderPresent(parent_rend);
 
