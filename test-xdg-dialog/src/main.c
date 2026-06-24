@@ -331,19 +331,55 @@ int main(int argc, char **argv) {
             case SDL_EVENT_QUIT:
                 running = false;
                 break;
-            case SDL_EVENT_KEY_DOWN:
-                if (ev.key.key == SDLK_ESCAPE) running = false;
-                else if (ev.key.key == SDLK_O) {  /* 'O' = Open */
-                    if (dialog_count == 0) {
-                        create_dialog(0, true);   /* modal */
-                        create_dialog(1, false);  /* non-modal */
+            case SDL_EVENT_WINDOW_CLOSE_REQUESTED: {
+                /* Handle SSD close button for each window */
+                Uint32 wid = ev.window.windowID;
+                if (wid == SDL_GetWindowID(parent_win)) {
+                    running = false;
+                } else {
+                    /* Check which dialog was closed */
+                    for (int i = 0; i < MAX_DIALOGS; i++) {
+                        if (dialogs[i].alive && dialogs[i].win &&
+                            wid == SDL_GetWindowID(dialogs[i].win)) {
+                            printf("[dialog %d] close requested\n", i);
+                            destroy_dialog(i);
+                            break;
+                        }
                     }
                 }
-                else if (ev.key.key == SDLK_C) {  /* 'C' = Close */
-                    destroy_dialog(0);
-                    destroy_dialog(1);
+                break;
+            }
+            case SDL_EVENT_KEY_DOWN: {
+                Uint32 key_wid = ev.key.windowID;
+                if (ev.key.key == SDLK_ESCAPE) {
+                    /* ESC in parent window = quit, ESC in dialog = close that dialog */
+                    if (key_wid == SDL_GetWindowID(parent_win)) {
+                        running = false;
+                    } else {
+                        for (int i = 0; i < MAX_DIALOGS; i++) {
+                            if (dialogs[i].alive && dialogs[i].win &&
+                                key_wid == SDL_GetWindowID(dialogs[i].win)) {
+                                printf("[dialog %d] closed by ESC\n", i);
+                                destroy_dialog(i);
+                                break;
+                            }
+                        }
+                    }
+                }
+                else if (key_wid == SDL_GetWindowID(parent_win)) {
+                    if (ev.key.key == SDLK_O) {  /* 'O' = Open */
+                        if (dialog_count == 0) {
+                            create_dialog(0, true);   /* modal */
+                            create_dialog(1, false);  /* non-modal */
+                        }
+                    }
+                    else if (ev.key.key == SDLK_C) {  /* 'C' = Close */
+                        destroy_dialog(0);
+                        destroy_dialog(1);
+                    }
                 }
                 break;
+            }
             case SDL_EVENT_MOUSE_BUTTON_DOWN: {
                 float mx = ev.button.x, my = ev.button.y;
                 for (int i = 0; i < nbtn; i++) {
@@ -369,10 +405,13 @@ int main(int argc, char **argv) {
                 break;
             }
             case SDL_EVENT_MOUSE_MOTION: {
-                float mx = ev.motion.x, my = ev.motion.y;
-                for (int i = 0; i < nbtn; i++)
-                    buttons[i].hovered = (mx >= buttons[i].rect.x && mx <= buttons[i].rect.x + buttons[i].rect.w &&
-                                          my >= buttons[i].rect.y && my <= buttons[i].rect.y + buttons[i].rect.h);
+                /* Only update hover for parent window events */
+                if (ev.motion.windowID == SDL_GetWindowID(parent_win)) {
+                    float mx = ev.motion.x, my = ev.motion.y;
+                    for (int i = 0; i < nbtn; i++)
+                        buttons[i].hovered = (mx >= buttons[i].rect.x && mx <= buttons[i].rect.x + buttons[i].rect.w &&
+                                              my >= buttons[i].rect.y && my <= buttons[i].rect.y + buttons[i].rect.h);
+                }
                 break;
             }
             }

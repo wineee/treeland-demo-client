@@ -36,11 +36,12 @@ cmake --build build-xdg-dialog --target run-xdg-dialog
 
 ### Mouse
 - Click buttons to perform actions
+- Click SSD close button (X) to close individual windows
 
 ### Keyboard
 - **O**: Open both dialogs (modal + non-modal)
 - **C**: Close all dialogs
-- **ESC**: Quit
+- **ESC**: Quit (parent) / Close dialog (dialog window)
 
 ## How It Works
 
