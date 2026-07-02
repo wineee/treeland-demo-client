@@ -42,7 +42,7 @@
 /* ─────────────────────────────────────────── tunables ─── */
 #define MAX_WINDOWS   8
 #define WINDOW_W      580
-#define PANEL_H       230
+#define PANEL_H       290
 #define CANVAS_H      240
 #define WINDOW_H      (CANVAS_H + PANEL_H)
 #define DEFAULT_GAP   40
@@ -57,6 +57,9 @@ typedef enum {
     BTN_RESET_ALL,
     BTN_ACTIVATE_DELAY, BTN_SET_ATTENTION, BTN_CLEAR_ATTENTION,
     BTN_MINIMIZE_AND_ACTIVATE,
+    BTN_ADD_CHILD,
+    BTN_TEST_PARENT_TOPMOST, BTN_TEST_CHILD_BOTTOM,
+    BTN_TEST_PARENT_TOP, BTN_TEST_CHILD_TOP,
     BTN_COUNT
 } BtnAction;
 
@@ -93,6 +96,7 @@ typedef struct {
     /* state the client tracks */
     int         req_x;
     int         req_y;
+    int         parent_index;    /* -1 = no parent, 0+ = index of parent window */
     bool        focused;
     bool        running;
 
@@ -292,6 +296,15 @@ static void init_buttons(WineWindow *w)
     py += BH + PAD;
     /* Row 4: reset */
     w->buttons[BTN_RESET_ALL]      = (Button){{ PAD,    py, (float)WINDOW_W - PAD*2.f, BH }, "Reset All", BTN_RESET_ALL };
+    py += BH + PAD;
+    /* Row 5: open child window */
+    w->buttons[BTN_ADD_CHILD]       = (Button){{ PAD,    py, (float)WINDOW_W - PAD*2.f, BH }, "+ Open Child Window", BTN_ADD_CHILD };
+    py += BH + PAD;
+    /* Row 6: parent-child test scenarios */
+    w->buttons[BTN_TEST_PARENT_TOPMOST] = (Button){{ col[0], py,       BW, BH }, "P-TOPMOST", BTN_TEST_PARENT_TOPMOST };
+    w->buttons[BTN_TEST_CHILD_BOTTOM]   = (Button){{ col[1], py,       BW, BH }, "C-BOTTOM",  BTN_TEST_CHILD_BOTTOM };
+    w->buttons[BTN_TEST_PARENT_TOP]     = (Button){{ col[2], py,       BW, BH }, "P-TOP",     BTN_TEST_PARENT_TOP };
+    w->buttons[BTN_TEST_CHILD_TOP]      = (Button){{ col[3], py,       BW, BH }, "C-TOP",     BTN_TEST_CHILD_TOP };
 }
 
 static void draw_button(SDL_Renderer *rend, const Button *b)
@@ -343,18 +356,22 @@ static void draw_window(WineWindow *w)
     char line[80];
     SDL_RenderDebugText(rend, 20.f, 22.f,  "treeland-wine-window test");
     snprintf(line, sizeof line, "win%-2d  window_id: %-6u  %s%s",
-        w->index, w->window_id, 
+        w->index, w->window_id,
         w->topmost ? "[TOPMOST]" : "[normal]",
         w->minimized ? " [MINIMIZED]" : "");
     SDL_RenderDebugText(rend, 20.f, 38.f, line);
-    snprintf(line, sizeof line, "actual  x=%-5d y=%d  %s", 
+    snprintf(line, sizeof line, "actual  x=%-5d y=%d  %s",
         w->actual_x, w->actual_y,
         w->attention ? "[ATTENTION]" : "");
     SDL_RenderDebugText(rend, 20.f, 54.f, line);
-    snprintf(line, sizeof line, "req     x=%-5d y=%d", w->req_x, w->req_y);
+    if (w->parent_index >= 0)
+        snprintf(line, sizeof line, "PARENT-CHILD: child of win%d", w->parent_index);
+    else
+        snprintf(line, sizeof line, "PARENT-CHILD: (none)");
     SDL_RenderDebugText(rend, 20.f, 70.f, line);
-    SDL_RenderDebugText(rend, 20.f, 90.f, "Keys: M A F  T N B Up  Ctrl+Arrows  R=reset  Q=quit");
-    SDL_RenderDebugText(rend, 20.f, 106.f, "Mouse: click buttons below");
+    snprintf(line, sizeof line, "req     x=%-5d y=%d", w->req_x, w->req_y);
+    SDL_RenderDebugText(rend, 20.f, 86.f, line);
+    SDL_RenderDebugText(rend, 20.f, 106.f, "Keys: M A F  T N B Up  1=P-TOPMOST 2=C-BOTTOM  R=reset  Q=quit");
 
     /* ---- panel area ---- */
     SDL_FRect panel = { 0.f, (float)CANVAS_H, (float)WINDOW_W, (float)PANEL_H };
@@ -364,7 +381,7 @@ static void draw_window(WineWindow *w)
     SDL_FRect sep = { 0.f, (float)CANVAS_H, (float)WINDOW_W, 1.f };
     SDL_RenderFillRect(rend, &sep);
 
-    /* section label */
+    /* section labels */
     SDL_SetRenderDrawColor(rend, 130, 160, 210, 200);
     SDL_RenderDebugText(rend, PAD, (float)CANVAS_H + PAD - 2.f, "Z-ORDER");
 
@@ -375,6 +392,44 @@ static void draw_window(WineWindow *w)
 }
 
 /* ─────────────────────── actions ──────────────────────── */
+
+static bool create_wine_window(AppState *app, int index, int x, int y,
+    const char *title);
+
+static void do_set_parent(WineWindow *child, WineWindow *parent)
+{
+    if (!child->wl_surface) return;
+
+    SDL_PropertiesID props = SDL_GetWindowProperties(child->sdl_window);
+    struct xdg_toplevel *child_toplevel = SDL_GetPointerProperty(props,
+        SDL_PROP_WINDOW_WAYLAND_XDG_TOPLEVEL_POINTER, NULL);
+    if (!child_toplevel) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "[win%d] Could not get xdg_toplevel for set_parent", child->index);
+        return;
+    }
+
+    struct xdg_toplevel *parent_toplevel = NULL;
+    if (parent) {
+        SDL_PropertiesID parent_props = SDL_GetWindowProperties(parent->sdl_window);
+        parent_toplevel = SDL_GetPointerProperty(parent_props,
+            SDL_PROP_WINDOW_WAYLAND_XDG_TOPLEVEL_POINTER, NULL);
+        if (!parent_toplevel) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                "[win%d] Could not get parent xdg_toplevel", child->index);
+            return;
+        }
+    }
+
+    xdg_toplevel_set_parent(child_toplevel, parent_toplevel);
+    wl_display_roundtrip(child->app->wl_display);
+    child->parent_index = parent ? parent->index : -1;
+
+    if (parent)
+        SDL_Log("[win%d] set_parent -> win%d", child->index, parent->index);
+    else
+        SDL_Log("[win%d] clear_parent", child->index);
+}
 
 static void do_set_position(WineWindow *w, int x, int y)
 {
@@ -488,6 +543,73 @@ static void handle_button_action(AppState *app, WineWindow *w, BtnAction action)
             do_set_z_order(&app->windows[i],
                 TREELAND_WINE_WINDOW_CONTROL_V1_Z_ORDER_OP_HWND_NOTOPMOST, 0);
         break;
+    case BTN_ADD_CHILD: {
+        /* Create a new child window for the current (parent) window */
+        if (app->nwindows >= MAX_WINDOWS) {
+            SDL_Log("[win%d] Cannot add more child windows (MAX=%d)", w->index, MAX_WINDOWS);
+            break;
+        }
+        int child_idx = app->nwindows;
+        int wx = w->actual_x + 60;
+        int wy = w->actual_y + 60;
+        if (!create_wine_window(app, child_idx, wx, wy, "Wine Child Window")) {
+            SDL_Log("[win%d] Failed to create child window", w->index);
+        } else {
+            app->nwindows++;
+            WineWindow *child = &app->windows[child_idx];
+            do_set_parent(child, w);
+            do_set_position(child, wx, wy);
+            wl_display_flush(app->wl_display);
+            SDL_Log("[win%d] Created child window as win%d", w->index, child_idx);
+        }
+        break;
+    }
+    case BTN_TEST_PARENT_TOPMOST: {
+        if (w->parent_index >= 0) {
+            WineWindow *parent = &app->windows[w->parent_index];
+            do_set_z_order(parent,
+                TREELAND_WINE_WINDOW_CONTROL_V1_Z_ORDER_OP_HWND_TOPMOST, 0);
+            SDL_Log("[TEST] Parent win%d -> TOPMOST (should NOT appear above child win%d)",
+                parent->index, w->index);
+        } else {
+            SDL_Log("[TEST] win%d has no parent (only win1+ have parents by default)", w->index);
+        }
+        break;
+    }
+    case BTN_TEST_CHILD_BOTTOM: {
+        if (w->parent_index >= 0) {
+            do_set_z_order(w,
+                TREELAND_WINE_WINDOW_CONTROL_V1_Z_ORDER_OP_HWND_BOTTOM, 0);
+            SDL_Log("[TEST] Child win%d -> BOTTOM (should NOT go below parent win%d)",
+                w->index, w->parent_index);
+        } else {
+            SDL_Log("[TEST] win%d has no parent (only win1+ have parents by default)", w->index);
+        }
+        break;
+    }
+    case BTN_TEST_PARENT_TOP: {
+        if (w->parent_index >= 0) {
+            WineWindow *parent = &app->windows[w->parent_index];
+            do_set_z_order(parent,
+                TREELAND_WINE_WINDOW_CONTROL_V1_Z_ORDER_OP_HWND_TOP, 0);
+            SDL_Log("[TEST] Parent win%d -> TOP (should NOT appear above child win%d)",
+                parent->index, w->index);
+        } else {
+            SDL_Log("[TEST] win%d has no parent (only win1+ have parents by default)", w->index);
+        }
+        break;
+    }
+    case BTN_TEST_CHILD_TOP: {
+        if (w->parent_index >= 0) {
+            do_set_z_order(w,
+                TREELAND_WINE_WINDOW_CONTROL_V1_Z_ORDER_OP_HWND_TOP, 0);
+            SDL_Log("[TEST] Child win%d -> TOP (should stay above parent win%d)",
+                w->index, w->parent_index);
+        } else {
+            SDL_Log("[TEST] win%d has no parent (only win1+ have parents by default)", w->index);
+        }
+        break;
+    }
     default: break;
     }
     wl_display_flush(app->wl_display);
@@ -575,6 +697,7 @@ static bool create_wine_window(AppState *app, int index, int x, int y,
     w->index   = index;
     w->req_x   = x;
     w->req_y   = y;
+    w->parent_index = -1;
     w->running = true;
 
     char buf[128];
@@ -761,6 +884,31 @@ static void handle_key(AppState *app, WineWindow *w, SDL_Keycode key, SDL_Keymod
         do_set_attention(w, 0, 500);
         break;
 
+    case SDLK_1:
+        /* Test: parent TOPMOST */
+        if (w->parent_index >= 0) {
+            WineWindow *parent = &app->windows[w->parent_index];
+            do_set_z_order(parent,
+                TREELAND_WINE_WINDOW_CONTROL_V1_Z_ORDER_OP_HWND_TOPMOST, 0);
+            SDL_Log("[TEST] Parent win%d -> TOPMOST (should NOT appear above child win%d)",
+                parent->index, w->index);
+        } else {
+            SDL_Log("[TEST] win%d has no parent (only win1+ have parents by default)", w->index);
+        }
+        break;
+
+    case SDLK_2:
+        /* Test: child BOTTOM */
+        if (w->parent_index >= 0) {
+            do_set_z_order(w,
+                TREELAND_WINE_WINDOW_CONTROL_V1_Z_ORDER_OP_HWND_BOTTOM, 0);
+            SDL_Log("[TEST] Child win%d -> BOTTOM (should NOT go below parent win%d)",
+                w->index, w->parent_index);
+        } else {
+            SDL_Log("[TEST] win%d has no parent (only win1+ have parents by default)", w->index);
+        }
+        break;
+
     case SDLK_H:
     case SDLK_SLASH:
         SDL_Log("─────────── Key bindings ───────────");
@@ -776,6 +924,8 @@ static void handle_key(AppState *app, WineWindow *w, SDL_Keycode key, SDL_Keymod
         SDL_Log("  Right       : HWND_INSERT_AFTER (below next sibling)");
         SDL_Log("  Ctrl+Arrows : move window by %d px", MOVE_STEP);
         SDL_Log("  R           : reset tier for all windows");
+        SDL_Log("  1           : test parent -> TOPMOST");
+        SDL_Log("  2           : test child -> BOTTOM");
         SDL_Log("────────────────────────────────────");
         break;
 
@@ -964,6 +1114,16 @@ int main(int argc, char **argv)
         do_set_position(&app.windows[i], wx, wy);
     }
     wl_display_roundtrip(app.wl_display);
+
+    /* Set up parent-child hierarchy at creation time (like test-xdg-dialog):
+     * Each window becomes a child of the previous window (win1 -> win0, win2 -> win1, ...)
+     * This establishes the initial parent-child tree structure for z-order testing. */
+    for (int i = 1; i < nwindows; ++i) {
+        WineWindow *child = &app.windows[i];
+        WineWindow *parent = &app.windows[i - 1];
+        do_set_parent(child, parent);
+        SDL_Log("[init] win%d is child of win%d", i, i - 1);
+    }
 
     SDL_Log("═══════════════════════════════════════════════════");
     SDL_Log("  test-wine-window-management  —  %d window(s) open", nwindows);
