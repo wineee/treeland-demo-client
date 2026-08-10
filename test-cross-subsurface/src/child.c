@@ -46,7 +46,9 @@ static void print_usage(const char *argv0)
         "Usage: %s --parent-token <TOKEN> [options]\n\n"
         "Options:\n"
         "  --pos <x> <y>       set_position (default: 50 50)\n"
+        "  --above-parent      place_above parent_token\n"
         "  --above [token]     place_above token (default: parent)\n"
+        "  --below-parent      place_below parent_token\n"
         "  --below [token]     place_below token\n"
         "  --color <0-6>        color index (default: 0)\n"
         "  --size <w> <h>       buffer size (default: 300x200)\n"
@@ -70,10 +72,16 @@ static int parse_args(int argc, char **argv, struct child_args *a)
             a->pos_x = atoi(argv[++i]);
             a->pos_y = atoi(argv[++i]);
             a->set_pos = true;
+        } else if (strcmp(argv[i], "--above-parent") == 0) {
+            a->do_above = true;
+            a->z_token = NULL;
         } else if (strcmp(argv[i], "--above") == 0) {
             a->do_above = true;
             a->z_token = (i + 1 < argc && argv[i + 1][0] != '-')
                 ? argv[++i] : NULL;
+        } else if (strcmp(argv[i], "--below-parent") == 0) {
+            a->do_below = true;
+            a->z_token = NULL;
         } else if (strcmp(argv[i], "--below") == 0) {
             a->do_below = true;
             a->z_token = (i + 1 < argc && argv[i + 1][0] != '-')
