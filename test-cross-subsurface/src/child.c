@@ -1,175 +1,121 @@
 /*
  * test-cross-subsurface-child
  *
- * Creates a raw wl_surface as a remote subsurface of the parent's
- * exported surface.  No visible window — controlled via stdin commands.
+ * One-shot: connect, create remote subsurface, apply operations from
+ * command-line arguments, commit, and exit.
  *
  * Usage:
- *   test-cross-subsurface-child --parent-token <TOKEN>
+ *   test-cross-subsurface-child --parent-token <TOKEN> [options...]
  *
- * Commands (one per line, stdin):
- *   pos <x> <y>   set_position
- *   top            place_above(parent_token) — above parent
- *   color          cycle color
- *   destroy        destroy remote subsurface
- *   recreate       recreate remote subsurface
- *   help           show available commands
- *   quit           exit
+ * Options:
+ *   --pos <x> <y>           set_position (default: 50 50)
+ *   --above [token]         place_above token (default: parent)
+ *   --below [token]         place_below token
+ *   --color <idx>            color index 0-6 (default: 0)
+ *   --size <w> <h>           buffer size (default: 300x200)
+ *   --no-attach              export surface only, no remote subsurface
+ *   --help                  show this help
  */
 
 #include "common.h"
-
 #include <poll.h>
-#include <signal.h>
+#include <time.h>
 
 /* cross-process subsurface: large, to distinguish from parent's local subs */
 #define CHILD_W 300
 #define CHILD_H 200
 
-/* ─────────────────────────────── app state ────────────── */
+/* ── parsed arguments ─────────────────────────────────── */
 
-static volatile sig_atomic_t g_running = 1;
-
-static void sigint_handler(int sig) { (void)sig; g_running = 0; }
-
-struct child_app {
-    struct wl_display *display;
-    struct wl_surface *surface;
-    struct wl_buffer *buffer;
-    struct wl_shm_pool *pool;
-    void               *buf_data;
-    struct treeland_exported_surface_v1  *exported;
-    struct treeland_remote_subsurface_v1 *remote;
-    const char         *parent_token;
-    int pos_x, pos_y;
-    int color_idx;
-    bool alive;
+struct child_args {
+    const char *parent_token;
+    int         pos_x, pos_y;
+    bool        set_pos;
+    bool        do_above, do_below;
+    const char *z_token;       /* NULL = use parent_token */
+    int         color_idx;
+    bool        set_color;
+    int         buf_w, buf_h;
+    bool        set_size;
+    bool        no_attach;
 };
-
-/* ───────────────────────── command processing ─────────── */
-
-static void app_destroy_sub(struct child_app *a)
-{
-    if (!a->remote) return;
-    treeland_remote_subsurface_v1_destroy(a->remote);
-    a->remote = NULL;
-    a->alive  = false;
-    wl_surface_attach(a->surface, NULL, 0, 0);
-    wl_surface_commit(a->surface);
-    wl_display_flush(a->display);
-    fprintf(stderr, "[child] destroyed\n");
-}
-
-static void app_recreate_sub(struct child_app *a)
-{
-    if (a->alive || !a->exported) return;
-    a->remote = treeland_exported_surface_v1_create_remote_subsurface(
-        a->exported, a->parent_token);
-    if (!a->remote) return;
-    treeland_remote_subsurface_v1_set_position(a->remote, a->pos_x, a->pos_y);
-    wl_surface_attach(a->surface, a->buffer, 0, 0);
-    wl_surface_commit(a->surface);
-    wl_display_flush(a->display);
-    a->alive = true;
-    fprintf(stderr, "[child] recreated at (%d, %d)\n", a->pos_x, a->pos_y);
-}
-
-static void process_line(struct child_app *a, const char *line)
-{
-    char cmd[32] = {0};
-    char tok[256] = {0};
-    int x = 0, y = 0;
-
-    if (sscanf(line, "%31s", cmd) != 1 || cmd[0] == '#' || cmd[0] == '\0')
-        return;
-
-    if (strcmp(cmd, "pos") == 0) {
-        if (sscanf(line, "%*s %d %d", &x, &y) == 2 && a->remote) {
-            a->pos_x = x; a->pos_y = y;
-            treeland_remote_subsurface_v1_set_position(a->remote, x, y);
-            wl_display_flush(a->display);
-            fprintf(stderr, "[child] pos -> (%d, %d)\n", x, y);
-        }
-    } else if (strcmp(cmd, "above") == 0) {
-        if (!a->remote) return;
-        const char *ref = a->parent_token;  /* default: parent */
-        if (sscanf(line, "%*s %255s", tok) == 1)
-            ref = tok;
-        treeland_remote_subsurface_v1_place_above(a->remote, ref);
-        wl_display_flush(a->display);
-        fprintf(stderr, "[child] place_above(\"%s\")\n", ref);
-    } else if (strcmp(cmd, "below") == 0) {
-        if (!a->remote) return;
-        const char *ref = a->parent_token;  /* default: parent */
-        if (sscanf(line, "%*s %255s", tok) == 1)
-            ref = tok;
-        treeland_remote_subsurface_v1_place_below(a->remote, ref);
-        wl_display_flush(a->display);
-        fprintf(stderr, "[child] place_below(\"%s\")\n", ref);
-    } else if (strcmp(cmd, "color") == 0) {
-        a->color_idx = (a->color_idx + 1) % NUM_COLORS;
-        if (a->buf_data) {
-            fill_buffer_color(a->buf_data, CHILD_W, CHILD_H,
-                color_cycle[a->color_idx]);
-            wl_surface_damage_buffer(a->surface, 0, 0, CHILD_W, CHILD_H);
-            wl_surface_commit(a->surface);
-            wl_display_flush(a->display);
-        }
-        fprintf(stderr, "[child] color -> #%06X\n",
-            color_cycle[a->color_idx] & 0xFFFFFF);
-    } else if (strcmp(cmd, "destroy") == 0 || strcmp(cmd, "d") == 0) {
-        app_destroy_sub(a);
-    } else if (strcmp(cmd, "recreate") == 0 || strcmp(cmd, "r") == 0) {
-        app_recreate_sub(a);
-    } else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "h") == 0) {
-        fprintf(stderr,
-            "Commands:\n"
-            "  pos <x> <y>       set_position\n"
-            "  above [token]      above parent (or token)\n"
-            "  below [token]      below parent (or token)\n"
-            "  color              cycle color\n"
-            "  destroy            destroy remote subsurface\n"
-            "  recreate           recreate remote subsurface\n"
-            "  quit               exit\n");
-    } else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "q") == 0) {
-        g_running = 0;
-    } else if (line[0] != '\0') {
-        fprintf(stderr, "[child] unknown command: %s (type 'help')\n", cmd);
-    }
-}
-
-/* ─────────────────────────────── main ─────────────────── */
 
 static void print_usage(const char *argv0)
 {
     fprintf(stderr,
-        "Usage: %s --parent-token <TOKEN>\n"
-        "  -h, --help  Show this help\n",
-        argv0);
+        "Usage: %s --parent-token <TOKEN> [options]\n\n"
+        "Options:\n"
+        "  --pos <x> <y>       set_position (default: 50 50)\n"
+        "  --above [token]     place_above token (default: parent)\n"
+        "  --below [token]     place_below token\n"
+        "  --color <0-6>        color index (default: 0)\n"
+        "  --size <w> <h>       buffer size (default: 300x200)\n"
+        "  --no-attach          export surface only, no remote subsurface\n"
+        "  --help              show this help\n");
 }
 
-int main(int argc, char **argv)
+static int parse_args(int argc, char **argv, struct child_args *a)
 {
-    const char *parent_token_arg = NULL;
+    memset(a, 0, sizeof(*a));
+    a->pos_x = 50;
+    a->pos_y = 50;
+    a->color_idx = -1;
+    a->buf_w = CHILD_W;
+    a->buf_h = CHILD_H;
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--parent-token") == 0 && i + 1 < argc) {
-            parent_token_arg = argv[++i];
+            a->parent_token = argv[++i];
+        } else if (strcmp(argv[i], "--pos") == 0 && i + 2 < argc) {
+            a->pos_x = atoi(argv[++i]);
+            a->pos_y = atoi(argv[++i]);
+            a->set_pos = true;
+        } else if (strcmp(argv[i], "--above") == 0) {
+            a->do_above = true;
+            a->z_token = (i + 1 < argc && argv[i + 1][0] != '-')
+                ? argv[++i] : NULL;
+        } else if (strcmp(argv[i], "--below") == 0) {
+            a->do_below = true;
+            a->z_token = (i + 1 < argc && argv[i + 1][0] != '-')
+                ? argv[++i] : NULL;
+        } else if (strcmp(argv[i], "--color") == 0 && i + 1 < argc) {
+            a->color_idx = atoi(argv[++i]);
+            a->set_color = true;
+        } else if (strcmp(argv[i], "--size") == 0 && i + 2 < argc) {
+            a->buf_w = atoi(argv[++i]);
+            a->buf_h = atoi(argv[++i]);
+            a->set_size = true;
+        } else if (strcmp(argv[i], "--no-attach") == 0) {
+            a->no_attach = true;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            print_usage(argv[0]); return 0;
+            print_usage(argv[0]);
+            exit(0);
         } else {
             fprintf(stderr, "Unknown argument: %s\n", argv[i]);
-            print_usage(argv[0]); return 1;
+            print_usage(argv[0]);
+            return -1;
         }
     }
+    return a->parent_token ? 0 : -1;
+}
 
-    if (!parent_token_arg) {
-        fprintf(stderr, "Error: --parent-token TOKEN is required\n");
-        print_usage(argv[0]);
+/* ═══════════════════════════════════════════════════════════ */
+
+int main(int argc, char **argv)
+{
+    struct child_args a;
+    if (parse_args(argc, argv, &a) != 0) return 1;
+
+    if (a.color_idx < 0) {
+        srand(time(NULL) ^ getpid());
+        a.color_idx = rand() % NUM_COLORS;
+    }
+    if (a.color_idx < 0 || a.color_idx >= NUM_COLORS) {
+        fprintf(stderr, "[error] color index out of range 0-%d\n", NUM_COLORS - 1);
         return 1;
     }
 
-    fprintf(stderr, "[child] started, parent_token: %s\n", parent_token_arg);
+    fprintf(stderr, "[child] parent_token: %s\n", a.parent_token);
 
     /* ── Wayland connection ── */
     struct wl_display *display = wl_display_connect(NULL);
@@ -186,114 +132,98 @@ int main(int argc, char **argv)
         wl_display_disconnect(display); return 1;
     }
 
-    /* ── raw wl_surface + buffer ── */
-    struct wl_surface *sub_surf = wl_compositor_create_surface(g.compositor);
-    if (!sub_surf) {
+    /* ── create surface + buffer ── */
+    struct wl_surface *surf = wl_compositor_create_surface(g.compositor);
+    if (!surf) {
         fprintf(stderr, "[error] create_surface failed\n");
         wl_display_disconnect(display); return 1;
     }
 
-    struct child_app app = {
-        .display      = display,
-        .surface      = sub_surf,
-        .parent_token = parent_token_arg,
-        .pos_x        = 50,
-        .pos_y        = 50,
-        .color_idx    = 0,
-        .alive        = false,
-    };
-
-    app.buffer = create_solid_buffer(g.shm, CHILD_W, CHILD_H,
-        color_cycle[app.color_idx], &app.buf_data, &app.pool);
-    if (!app.buffer) {
-        wl_surface_destroy(sub_surf);
+    void *buf_data = NULL;
+    struct wl_shm_pool *pool = NULL;
+    struct wl_buffer *buffer = create_solid_buffer(g.shm, a.buf_w, a.buf_h,
+        color_cycle[a.color_idx], &buf_data, &pool);
+    if (!buffer) {
+        wl_surface_destroy(surf);
         wl_display_disconnect(display); return 1;
     }
 
-    wl_surface_attach(sub_surf, app.buffer, 0, 0);
-    wl_surface_commit(sub_surf);
+    wl_surface_attach(surf, buffer, 0, 0);
+    wl_surface_commit(surf);
 
-    /* ── export + remote subsurface ── */
+    /* ── export ── */
     char *child_token = NULL;
-    app.exported = treeland_subsurface_manager_v1_export_surface(
-        g.manager, sub_surf);
+    struct treeland_exported_surface_v1 *exported =
+        treeland_subsurface_manager_v1_export_surface(g.manager, surf);
     treeland_exported_surface_v1_add_listener(
-        app.exported, &exported_listener, &child_token);
+        exported, &exported_listener, &child_token);
     wl_display_roundtrip(display);
 
-    fprintf(stderr, "  child_token: %s\n",
+    fprintf(stderr, "[child] child_token: %s\n",
         child_token ? child_token : "(null)");
+    fprintf(stderr, "[child] size: %dx%d  color: #%06X\n",
+        a.buf_w, a.buf_h, color_cycle[a.color_idx] & 0xFFFFFF);
 
-    app_recreate_sub(&app);
+    if (a.no_attach) {
+        fprintf(stderr, "[child] --no-attach: exported without remote subsurface\n");
+        goto cleanup;
+    }
 
-    if (!app.alive) {
+    /* ── create remote subsurface ── */
+    struct treeland_remote_subsurface_v1 *remote =
+        treeland_exported_surface_v1_create_remote_subsurface(
+            exported, a.parent_token);
+    if (!remote) {
         fprintf(stderr, "[error] create_remote_subsurface failed\n");
-        /* continue anyway so user can try 'recreate' */
+        goto cleanup;
     }
 
-    /* ── SIGINT for clean exit ── */
-    struct sigaction sa = { .sa_handler = sigint_handler };
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGINT, &sa, NULL);
+    if (a.set_pos) {
+        treeland_remote_subsurface_v1_set_position(remote, a.pos_x, a.pos_y);
+        fprintf(stderr, "[child] pos -> (%d, %d)\n", a.pos_x, a.pos_y);
+    }
 
-    /* ── event loop: poll on wl_display fd + stdin ── */
-    fprintf(stderr, "[child] ready — type 'help' for commands\n");
+    if (a.do_above) {
+        const char *ref = a.z_token ? a.z_token : a.parent_token;
+        treeland_remote_subsurface_v1_place_above(remote, ref);
+        fprintf(stderr, "[child] place_above(\"%s\")\n", ref);
+    }
 
-    while (g_running) {
-        while (wl_display_prepare_read(display) != 0)
-            wl_display_dispatch_pending(display);
+    if (a.do_below) {
+        const char *ref = a.z_token ? a.z_token : a.parent_token;
+        treeland_remote_subsurface_v1_place_below(remote, ref);
+        fprintf(stderr, "[child] place_below(\"%s\")\n", ref);
+    }
+
+    wl_surface_commit(surf);
+    wl_display_roundtrip(display);
+    fprintf(stderr, "[child] done\n");
+
+    /* keep alive until stdin closes or signal */
+    fprintf(stderr, "[child] running (close stdin or Ctrl+C to exit)\n");
+    struct pollfd pfds[2] = {
+        { .fd = wl_display_get_fd(display),   .events = POLLIN },
+        { .fd = STDIN_FILENO,                 .events = POLLIN },
+    };
+    while (poll(pfds, 2, -1) > 0) {
+        if (pfds[1].revents & (POLLIN | POLLHUP)) {
+            char buf[64];
+            if (read(STDIN_FILENO, buf, sizeof(buf)) <= 0) break;
+        }
+        wl_display_dispatch_pending(display);
         wl_display_flush(display);
-
-        struct pollfd pfds[2] = {
-            { .fd = wl_display_get_fd(display), .events = POLLIN },
-            { .fd = STDIN_FILENO,               .events = POLLIN },
-        };
-
-        int ret = poll(pfds, 2, 200);
-        if (ret < 0) {
-            if (errno == EINTR) continue;
-            perror("poll");
-            break;
-        }
-        if (ret == 0) {
-            wl_display_cancel_read(display);
-            continue;
-        }
-
-        /* must complete prepare_read cycle BEFORE any other wl calls */
-        if (pfds[0].revents) {
-            wl_display_read_events(display);
-            wl_display_dispatch_pending(display);
-        } else {
-            wl_display_cancel_read(display);
-        }
-
-        /* now safe to process stdin commands */
-        if (pfds[1].revents) {
-            char buf[256];
-            ssize_t n = read(STDIN_FILENO, buf, sizeof(buf) - 1);
-            if (n <= 0) break;  /* EOF */
-            buf[n] = '\0';
-
-            char *saveptr = NULL;
-            char *line = strtok_r(buf, "\n", &saveptr);
-            while (line) {
-                process_line(&app, line);
-                line = strtok_r(NULL, "\n", &saveptr);
-            }
-        }
     }
 
-    /* ── cleanup ── */
-    if (app.remote)  treeland_remote_subsurface_v1_destroy(app.remote);
-    if (app.exported) treeland_exported_surface_v1_destroy(app.exported);
-    if (app.buffer)   wl_buffer_destroy(app.buffer);
-    if (app.pool) {
-        wl_shm_pool_destroy(app.pool);
-        if (app.buf_data) munmap(app.buf_data, CHILD_W * CHILD_H * 4);
+cleanup:
+    if (remote)       treeland_remote_subsurface_v1_destroy(remote);
+    if (exported)      treeland_exported_surface_v1_destroy(exported);
+    if (buffer)        wl_buffer_destroy(buffer);
+    if (pool) {
+        wl_shm_pool_destroy(pool);
+        if (buf_data) munmap(buf_data, a.buf_w * a.buf_h * 4);
     }
-    if (sub_surf)     wl_surface_destroy(sub_surf);
-    if (g.manager)    treeland_subsurface_manager_v1_destroy(g.manager);
+    if (surf)          wl_surface_destroy(surf);
+    if (g.manager)     treeland_subsurface_manager_v1_destroy(g.manager);
     free(child_token);
     wl_display_disconnect(display);
     return 0;

@@ -2,12 +2,14 @@
  * common.c - Shared implementations for test-cross-subsurface.
  *
  * Contains: create_solid_buffer, fill_buffer_color,
+ *           on_buf_release, create_buf_slot, destroy_buf_slot,
+ *           sub_commit_color, sub_cleanup,
  *           on_surface_token, exported_listener, bind_wl_globals.
  */
 
 #include "common.h"
 
-/* ─────────────────────────────── wl_shm helpers ────────── */
+/* ─────────────────────── wl_shm helpers ────────── */
 
 struct wl_buffer *create_solid_buffer(struct wl_shm *shm,
     int w, int h, uint32_t color_argb,
@@ -70,6 +72,68 @@ void fill_buffer_color(void *data, int w, int h, uint32_t color)
         px[i] = color;
 }
 
+/* ─────────── wl_buffer.release listener ────────── */
+
+static void on_buf_release(void *data, struct wl_buffer *wl_buf)
+{
+    (void)wl_buf;
+    struct BufSlot *slot = data;
+    slot->in_use = false;
+}
+
+static const struct wl_buffer_listener buf_listener = {
+    .release = on_buf_release,
+};
+
+/* ──────────── BufSlot helpers ──────────── */
+
+bool create_buf_slot(struct wl_shm *shm, int w, int h,
+    uint32_t color, struct BufSlot *slot)
+{
+    memset(slot, 0, sizeof(*slot));
+    slot->buffer = create_solid_buffer(shm, w, h, color,
+        &slot->data, &slot->pool);
+    if (!slot->buffer) return false;
+    slot->in_use = false;
+    wl_buffer_add_listener(slot->buffer, &buf_listener, slot);
+    return true;
+}
+
+void destroy_buf_slot(struct BufSlot *slot, int w, int h)
+{
+    if (slot->buffer) wl_buffer_destroy(slot->buffer);
+    if (slot->pool) {
+        wl_shm_pool_destroy(slot->pool);
+        if (slot->data) munmap(slot->data, w * h * 4);
+    }
+    memset(slot, 0, sizeof(*slot));
+}
+
+/* ──────────── SubSurface helpers ──────────── */
+
+bool sub_commit_color(struct SubSurface *s, uint32_t color)
+{
+    struct BufSlot *slot = &s->bufs[s->next_buf % SUB_NUM_BUFS];
+    if (slot->in_use) return false;
+    fill_buffer_color(slot->data, s->w, s->h, color);
+    wl_surface_attach(s->surface, slot->buffer, 0, 0);
+    wl_surface_damage_buffer(s->surface, 0, 0, s->w, s->h);
+    wl_surface_commit(s->surface);
+    slot->in_use = true;
+    s->next_buf++;
+    return true;
+}
+
+void sub_cleanup(struct SubSurface *s)
+{
+    if (s->remote)   treeland_remote_subsurface_v1_destroy(s->remote);
+    if (s->exported) treeland_exported_surface_v1_destroy(s->exported);
+    for (int b = 0; b < SUB_NUM_BUFS; b++)
+        destroy_buf_slot(&s->bufs[b], s->w, s->h);
+    if (s->surface)  wl_surface_destroy(s->surface);
+    free(s->token);
+}
+
 /* ──────────────────── exported_surface listener ─────────── */
 
 static void on_surface_token(void *data,
@@ -81,8 +145,6 @@ static void on_surface_token(void *data,
     *out = strdup(token);
     fprintf(stderr, "surface_token: %s\n", token);
 }
-
-/* ── protocol error loggers ─────────────────────────────── */
 
 const struct treeland_exported_surface_v1_listener exported_listener = {
     .surface_token = on_surface_token,
@@ -101,6 +163,9 @@ static void registry_global(void *data, struct wl_registry *registry,
     else if (strcmp(interface, wl_shm_interface.name) == 0)
         g->shm = wl_registry_bind(registry, name,
             &wl_shm_interface, MIN(version, 1u));
+    else if (strcmp(interface, wl_subcompositor_interface.name) == 0)
+        g->subcompositor = wl_registry_bind(registry, name,
+            &wl_subcompositor_interface, MIN(version, 1u));
     else if (strcmp(interface,
                treeland_subsurface_manager_v1_interface.name) == 0)
         g->manager = wl_registry_bind(registry, name,

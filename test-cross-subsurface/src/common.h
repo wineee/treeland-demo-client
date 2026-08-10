@@ -39,6 +39,7 @@
 #define WINDOW_H    400
 #define MOVE_STEP   20
 #define NUM_SUBSURFACES 5
+#define SUB_NUM_BUFS    2
 
 static const uint32_t color_cycle[] = {
     0xFF44CC66,  /* green  */
@@ -53,18 +54,26 @@ static const uint32_t color_cycle[] = {
 
 /* ── structs ────────────────────────────────────────────── */
 
+struct BufSlot {
+    struct wl_buffer   *buffer;
+    struct wl_shm_pool *pool;
+    void               *data;
+    bool                in_use;  /* sent to compositor, awaiting release */
+};
+
 struct WlGlobals {
     struct wl_display *wl_display;
     struct wl_compositor  *compositor;
     struct wl_shm         *shm;
+    struct wl_subcompositor *subcompositor;
     struct treeland_subsurface_manager_v1 *manager;
 };
 
 struct SubSurface {
     struct wl_surface  *surface;
-    struct wl_buffer   *buffer;
-    struct wl_shm_pool *pool;
-    void               *buf_data;
+    struct BufSlot      bufs[SUB_NUM_BUFS];
+    int                 next_buf;
+    int w, h;
     char               *token;
     struct treeland_exported_surface_v1  *exported;
     struct treeland_remote_subsurface_v1 *remote;
@@ -80,6 +89,13 @@ struct wl_buffer *create_solid_buffer(struct wl_shm *shm,
     void **out_data, struct wl_shm_pool **out_pool);
 
 void fill_buffer_color(void *data, int w, int h, uint32_t color);
+
+bool create_buf_slot(struct wl_shm *shm, int w, int h,
+    uint32_t color, struct BufSlot *slot);
+
+void destroy_buf_slot(struct BufSlot *slot, int w, int h);
+
+bool sub_commit_color(struct SubSurface *s, uint32_t color);
 
 void bind_wl_globals(struct wl_display *display, struct WlGlobals *g);
 
