@@ -237,6 +237,9 @@ static int parent_main(int argc, char *argv[])
         show_remote ? "yes" : "no", show_std ? "yes" : "no",
         export_only ? "yes" : "no");
 
+    /* Force Wayland video driver */
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland");
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_Init: %s", SDL_GetError());
         return 1;

@@ -1061,6 +1061,9 @@ int main(int argc, char **argv)
     SDL_SetAppMetadata("test-wine-window-management", "1.0",
         "org.treeland.demo.wine-window-management");
 
+    /* Force Wayland video driver */
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland");
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
             "SDL_Init failed: %s", SDL_GetError());

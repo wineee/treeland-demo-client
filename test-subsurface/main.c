@@ -157,6 +157,9 @@ typedef struct {
 int main(int argc, char **argv) {
     srand(time(NULL));
 
+    /* Force Wayland video driver */
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland");
+
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;

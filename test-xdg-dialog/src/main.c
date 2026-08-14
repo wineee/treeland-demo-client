@@ -245,6 +245,9 @@ static void draw_dialog(DialogWindow *d) {
 
 /* ── main ──────────────────────────────────────────────── */
 int main(int argc, char **argv) {
+    /* Force Wayland video driver */
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland");
+
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
