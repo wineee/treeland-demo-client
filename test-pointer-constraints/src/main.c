@@ -21,6 +21,14 @@
  *   R          Toggle confine region overlay
  *   C          Clear relative motion display
  *   Space      Cycle through modes
+ *
+ * Panel layout:
+ *   [Lock group]  │  [Confine group]
+ *   Lock oneshot  │  Conf oneshot
+ *   Lock persist  │  Conf persist
+ *   Set Hint (H)  │  Region (R)
+ *   ═══════════════════════
+ *          Unconstrain (U)
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -54,12 +62,9 @@ typedef enum {
     BTN_LOCK_PERSISTENT,
     BTN_CONFINE_ONESHOT,
     BTN_CONFINE_PERSISTENT,
-    BTN_UNCONSTRAIN,
     BTN_SET_HINT,
     BTN_TOGGLE_REGION,
-    BTN_CLEAR_MOTION,
-    BTN_SCENE_LOCK_MOTION,
-    BTN_SCENE_CONFINE_ONLY,
+    BTN_UNCONSTRAIN,
     BTN_COUNT
 } BtnAction;
 
@@ -564,47 +569,21 @@ static void do_toggle_region(AppState *app)
         }
     } else {
         if (app->confine_region) {
+            /* Restore to full surface — set_region(NULL) means unbounded */
+            if (app->locked_ptr) {
+                zwp_locked_pointer_v1_set_region(app->locked_ptr, NULL);
+                wl_surface_commit(app->wl_surface);
+            }
+            if (app->confined_ptr) {
+                zwp_confined_pointer_v1_set_region(app->confined_ptr, NULL);
+                wl_surface_commit(app->wl_surface);
+            }
             wl_region_destroy(app->confine_region);
             app->confine_region = NULL;
+            SDL_Log("Confine region cleared (restored to full surface)");
         }
     }
 }
-
-static void do_clear_motion(AppState *app)
-{
-    app->rel_dx = app->rel_dy = 0;
-    app->rel_dx_unaccel = app->rel_dy_unaccel = 0;
-    memset(app->hist, 0, sizeof(app->hist));
-    app->hist_head = 0;
-    app->hist_count = 0;
-    SDL_Log("Motion data cleared");
-}
-
-static void do_scene_lock_motion(AppState *app)
-{
-    /* Scene 1: Lock pointer (oneshot) + relative pointer test */
-    SDL_Log("── Scene: Lock + RelativePointer ──");
-    /* Ensure relative pointer exists */
-    if (!app->rel_ptr && app->rel_mgr && app->wl_pointer) {
-        app->rel_ptr = zwp_relative_pointer_manager_v1_get_relative_pointer(
-            app->rel_mgr, app->wl_pointer);
-        zwp_relative_pointer_v1_add_listener(app->rel_ptr,
-            &rel_ptr_listener, app);
-        SDL_Log("Relative pointer created");
-    }
-    do_lock_pointer(app, ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_ONESHOT);
-}
-
-static void do_scene_confine_only(AppState *app)
-{
-    /* Scene 2: Confine pointer (oneshot) — test region confinement */
-    SDL_Log("── Scene: Confine only ──");
-    app->show_region = true;
-    app->region_rect = (SDL_Rect){ WINDOW_W/4, CANVAS_H/4, WINDOW_W/2, CANVAS_H/2 };
-    do_confine_pointer(app, ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_ONESHOT);
-}
-
-/* ─────────────────── button setup ─────────────────────── */
 
 #define BW  140.f
 #define BH   28.f
@@ -613,31 +592,31 @@ static void do_scene_confine_only(AppState *app)
 static void init_buttons(AppState *app)
 {
     float py = (float)CANVAS_H + PAD;
-    float col[3];
-    for (int i = 0; i < 3; ++i)
-        col[i] = PAD + (float)i * (BW + PAD);
 
-    /* Row 0: constraint modes */
-    app->buttons[BTN_LOCK_ONESHOT]       = (Button){{ col[0], py, BW, BH }, "Lock oneshot",  BTN_LOCK_ONESHOT };
-    app->buttons[BTN_LOCK_PERSISTENT]    = (Button){{ col[1], py, BW, BH }, "Lock persist",  BTN_LOCK_PERSISTENT };
-    app->buttons[BTN_CONFINE_ONESHOT]    = (Button){{ col[2], py, BW, BH }, "Conf oneshot",  BTN_CONFINE_ONESHOT };
+    /* Lock group uses original left columns */
+    float col_lo = PAD;
+    float col_li = col_lo + BW + PAD;
+
+    /* Confine group shifted right — extra gap for visual separation */
+    float col_co = col_li + BW + PAD + PAD*2 + 2.f;
+    float col_ci = col_co + BW + PAD;
+
+    /* ── Row 0: Lock vs Confine ── */
+    app->buttons[BTN_LOCK_ONESHOT]       = (Button){{ col_lo, py, BW, BH }, "Lock oneshot",   BTN_LOCK_ONESHOT };
+    app->buttons[BTN_LOCK_PERSISTENT]    = (Button){{ col_li, py, BW, BH }, "Lock persist",   BTN_LOCK_PERSISTENT };
+    app->buttons[BTN_CONFINE_ONESHOT]    = (Button){{ col_co, py, BW, BH }, "Conf oneshot",   BTN_CONFINE_ONESHOT };
+    app->buttons[BTN_CONFINE_PERSISTENT] = (Button){{ col_ci, py, BW, BH }, "Conf persist",   BTN_CONFINE_PERSISTENT };
     py += BH + PAD;
 
-    /* Row 1: more modes + unconstrain */
-    app->buttons[BTN_CONFINE_PERSISTENT] = (Button){{ col[0], py, BW, BH }, "Conf persist",  BTN_CONFINE_PERSISTENT };
-    /* Span columns 1-2 for Unconstrain */
-    app->buttons[BTN_UNCONSTRAIN]        = (Button){{ col[1], py, BW*2.f+PAD, BH }, "Unconstrain (U)", BTN_UNCONSTRAIN };
-    py += BH + PAD;
+    /* ── Row 1: Tool helpers ── */
+    app->buttons[BTN_SET_HINT]           = (Button){{ col_lo, py, BW, BH }, "Set Hint (H)",   BTN_SET_HINT };
+    app->buttons[BTN_TOGGLE_REGION]      = (Button){{ col_co, py, BW, BH }, "Region (R)",     BTN_TOGGLE_REGION };
+    py += BH + PAD + 6.f;
 
-    /* Row 2: tools */
-    app->buttons[BTN_SET_HINT]           = (Button){{ col[0], py, BW, BH }, "Set Hint (H)",  BTN_SET_HINT };
-    app->buttons[BTN_TOGGLE_REGION]      = (Button){{ col[1], py, BW, BH }, "Region (R)",    BTN_TOGGLE_REGION };
-    app->buttons[BTN_CLEAR_MOTION]       = (Button){{ col[2], py, BW, BH }, "Clear (C)",     BTN_CLEAR_MOTION };
-    py += BH + PAD;
-
-    /* Row 3: scene presets */
-    app->buttons[BTN_SCENE_LOCK_MOTION]  = (Button){{ col[0], py, BW, BH }, "Scene Lock",    BTN_SCENE_LOCK_MOTION };
-    app->buttons[BTN_SCENE_CONFINE_ONLY] = (Button){{ col[1], py, BW, BH }, "Scene Confine", BTN_SCENE_CONFINE_ONLY };
+    /* ── Row 2: Unconstrain (centered) ── */
+    float uc_w = BW * 2.0f;
+    float uc_x = (float)(WINDOW_W - (int)uc_w) / 2.0f;
+    app->buttons[BTN_UNCONSTRAIN]        = (Button){{ uc_x, py, uc_w, BH }, "Unconstrain (U)", BTN_UNCONSTRAIN };
 }
 
 /* ────────────────── button drawing ────────────────────── */
@@ -682,15 +661,6 @@ static void handle_button_action(AppState *app, BtnAction action)
         break;
     case BTN_TOGGLE_REGION:
         do_toggle_region(app);
-        break;
-    case BTN_CLEAR_MOTION:
-        do_clear_motion(app);
-        break;
-    case BTN_SCENE_LOCK_MOTION:
-        do_scene_lock_motion(app);
-        break;
-    case BTN_SCENE_CONFINE_ONLY:
-        do_scene_confine_only(app);
         break;
     default:
         break;
@@ -873,10 +843,24 @@ static void draw_frame(AppState *app)
     SDL_FRect sep = { 0.f, (float)CANVAS_H, (float)WINDOW_W, 1.f };
     SDL_RenderFillRect(rend, &sep);
 
-    /* ── button section label ── */
+    /* ── vertical separator between lock and confine groups ── */
+    float sep_vx = PAD + (BW + PAD) * 2.f + PAD;  /* matches col_li + BW */
+    SDL_SetRenderDrawColor(rend, 80, 100, 140, 120);
+    SDL_RenderLine(rend, sep_vx, (float)CANVAS_H + 4.f,
+                   sep_vx, (float)CANVAS_H + PANEL_H - 24.f);
+
+    /* ── horizontal separator above Unconstrain ── */
+    SDL_SetRenderDrawColor(rend, 80, 100, 140, 100);
+    float hor_sep_y = (float)CANVAS_H + PANEL_H - 40.f;
+    SDL_RenderLine(rend, PAD, hor_sep_y, (float)WINDOW_W - PAD, hor_sep_y);
+
+    /* ── section labels ── */
     SDL_SetRenderDrawColor(rend, 130, 160, 210, 200);
-    SDL_RenderDebugText(rend, PAD, (float)CANVAS_H + PAD - 2.f,
-        "CONTROLS");
+    SDL_RenderDebugText(rend, PAD + 2.f, (float)CANVAS_H + PAD - 2.f,
+        "LOCK");
+    float conf_lab_x = sep_vx + PAD + 2.f;
+    SDL_RenderDebugText(rend, conf_lab_x, (float)CANVAS_H + PAD - 2.f,
+        "CONFINE");
 
     for (int i = 0; i < BTN_COUNT; ++i)
         draw_button(rend, &app->buttons[i]);
@@ -885,7 +869,7 @@ static void draw_frame(AppState *app)
     SDL_SetRenderDrawColor(rend, 100, 120, 160, 200);
     float ky = (float)CANVAS_H + PANEL_H - 14.f;
     SDL_RenderDebugText(rend, PAD, ky,
-        "1:Lock1 2:LockP 3:Conf1 4:ConfP  U:Unconstrain  H:Hint  R:Region  C:Clear  Q:Quit");
+        "1:Lock1 2:LockP 3:Conf1  4:ConfP  H:Hint  R:Region  U:Unconstrain  Q:Quit");
 
     SDL_RenderPresent(rend);
 }
@@ -920,20 +904,7 @@ static void handle_key(AppState *app, SDL_Keycode key, SDL_Keymod mod)
     case SDLK_R:
         do_toggle_region(app);
         break;
-    case SDLK_C:
-        do_clear_motion(app);
-        break;
-    case SDLK_SPACE: {
-        /* Cycle: lock oneshot -> confine oneshot -> none */
-        if (app->constraint_state == CONSTRAINT_NONE)
-            do_lock_pointer(app, ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_ONESHOT);
-        else if (app->constraint_state == CONSTRAINT_LOCKED ||
-                 app->constraint_state == CONSTRAINT_LOCK_PENDING)
-            do_confine_pointer(app, ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_ONESHOT);
-        else
-            do_unconstrain(app);
-        break;
-    }
+
     default:
         break;
     }
