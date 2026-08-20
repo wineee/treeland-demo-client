@@ -9,7 +9,6 @@
   sdl3,
   wayland,
   wayland-protocols,
-  treeland-protocols,
 }:
 
 stdenv.mkDerivation rec {
@@ -37,7 +36,6 @@ stdenv.mkDerivation rec {
     sdl3
     wayland
     wayland-protocols
-    treeland-protocols
   ];
 
   installPhase = ''

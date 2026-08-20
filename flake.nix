@@ -32,7 +32,6 @@
               wayland
               wayland-protocols
               sdl3
-              treeland-protocols
             ];
           };
         in
