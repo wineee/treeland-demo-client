@@ -60,6 +60,7 @@
 typedef enum {
     BTN_LOCK_ONESHOT,
     BTN_LOCK_PERSISTENT,
+    BTN_LOCK_WITH_REGION,
     BTN_CONFINE_ONESHOT,
     BTN_CONFINE_PERSISTENT,
     BTN_SET_HINT,
@@ -482,6 +483,57 @@ static void do_lock_pointer(AppState *app, enum zwp_pointer_constraints_v1_lifet
         app->requested_lifetime));
 }
 
+static void do_lock_pointer_with_region(AppState *app, enum zwp_pointer_constraints_v1_lifetime lifetime)
+{
+    if (!app->constraints || !app->wl_pointer || !app->wl_surface) {
+        SDL_Log("Cannot lock: missing constraints global, pointer, or surface");
+        return;
+    }
+
+    /* Create default confine region if not already present */
+    if (!app->confine_region) {
+        if (!app->compositor) {
+            SDL_Log("Cannot lock with region: no wl_compositor");
+            return;
+        }
+        int rx = WINDOW_W / 4;
+        int ry = CANVAS_H / 4;
+        int rw = WINDOW_W / 2;
+        int rh = CANVAS_H / 2;
+        app->region_rect = (SDL_Rect){ rx, ry, rw, rh };
+        app->confine_region = wl_compositor_create_region(app->compositor);
+        if (app->confine_region)
+            wl_region_add(app->confine_region, rx, ry, rw, rh);
+    }
+    app->show_region = true;
+
+    /* Release any existing constraint */
+    destroy_constraint(app);
+
+    app->requested_lifetime = (lifetime == ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT)
+        ? LIFETIME_PERSISTENT : LIFETIME_ONESHOT;
+
+    app->locked_ptr = zwp_pointer_constraints_v1_lock_pointer(
+        app->constraints,
+        app->wl_surface,
+        app->wl_pointer,
+        app->confine_region,  /* region — lock only activates inside region */
+        lifetime);
+    zwp_locked_pointer_v1_add_listener(app->locked_ptr, &locked_ptr_listener, app);
+
+    /* If we have a hint, set it */
+    if (app->hint_active) {
+        zwp_locked_pointer_v1_set_cursor_position_hint(app->locked_ptr,
+            wl_fixed_from_double(app->hint_x),
+            wl_fixed_from_double(app->hint_y));
+    }
+
+    app->constraint_state = CONSTRAINT_LOCK_PENDING;
+    wl_display_flush(app->wl_display);
+    SDL_Log("Lock requested with region (%s)", lifetime_name(
+        app->requested_lifetime));
+}
+
 static void do_confine_pointer(AppState *app, enum zwp_pointer_constraints_v1_lifetime lifetime)
 {
     if (!app->constraints || !app->wl_pointer || !app->wl_surface) {
@@ -593,19 +645,24 @@ static void init_buttons(AppState *app)
 {
     float py = (float)CANVAS_H + PAD;
 
-    /* Lock group uses original left columns */
-    float col_lo = PAD;
-    float col_li = col_lo + BW + PAD;
+    /* Lock group: 3 buttons */
+    float col_lo = PAD;                              /* Lock oneshot */
+    float col_li = col_lo + BW + PAD;               /* Lock persist */
+    float col_lr = col_li + BW + PAD;               /* Lock+Region */
 
-    /* Confine group shifted right — extra gap for visual separation */
-    float col_co = col_li + BW + PAD + PAD*2 + 2.f;
+    /* Vertical separator between lock / confine */
+    float sep_vx = col_lr + BW + PAD + PAD;          /* gap + line */
+
+    /* Confine group shifted right */
+    float col_co = sep_vx + PAD + PAD;
     float col_ci = col_co + BW + PAD;
 
     /* ── Row 0: Lock vs Confine ── */
-    app->buttons[BTN_LOCK_ONESHOT]       = (Button){{ col_lo, py, BW, BH }, "Lock oneshot",   BTN_LOCK_ONESHOT };
-    app->buttons[BTN_LOCK_PERSISTENT]    = (Button){{ col_li, py, BW, BH }, "Lock persist",   BTN_LOCK_PERSISTENT };
-    app->buttons[BTN_CONFINE_ONESHOT]    = (Button){{ col_co, py, BW, BH }, "Conf oneshot",   BTN_CONFINE_ONESHOT };
-    app->buttons[BTN_CONFINE_PERSISTENT] = (Button){{ col_ci, py, BW, BH }, "Conf persist",   BTN_CONFINE_PERSISTENT };
+    app->buttons[BTN_LOCK_ONESHOT]       = (Button){{ col_lo, py, BW, BH }, "Lock (1)",         BTN_LOCK_ONESHOT };
+    app->buttons[BTN_LOCK_PERSISTENT]    = (Button){{ col_li, py, BW, BH }, "LockP (2)",        BTN_LOCK_PERSISTENT };
+    app->buttons[BTN_LOCK_WITH_REGION]   = (Button){{ col_lr, py, BW, BH }, "Lock+Rgn (5)",     BTN_LOCK_WITH_REGION };
+    app->buttons[BTN_CONFINE_ONESHOT]    = (Button){{ col_co, py, BW, BH }, "Conf (3)",         BTN_CONFINE_ONESHOT };
+    app->buttons[BTN_CONFINE_PERSISTENT] = (Button){{ col_ci, py, BW, BH }, "ConfP (4)",        BTN_CONFINE_PERSISTENT };
     py += BH + PAD;
 
     /* ── Row 1: Tool helpers ── */
@@ -646,6 +703,9 @@ static void handle_button_action(AppState *app, BtnAction action)
         break;
     case BTN_LOCK_PERSISTENT:
         do_lock_pointer(app, ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
+        break;
+    case BTN_LOCK_WITH_REGION:
+        do_lock_pointer_with_region(app, ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_ONESHOT);
         break;
     case BTN_CONFINE_ONESHOT:
         do_confine_pointer(app, ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_ONESHOT);
@@ -712,7 +772,22 @@ static void draw_canvas(AppState *app)
         SDL_RenderLine(rend, cx, cy - 40.f, cx, cy + 40.f);
         /* Lock icon text */
         SDL_SetRenderDrawColor(rend, 255, 100, 80, 255);
-        SDL_RenderDebugText(rend, cx - 12.f, cy - 60.f - 16.f, "🔒 LOCKED");
+        SDL_RenderDebugText(rend, cx - 12.f, cy - 60.f - 16.f, "LOCKED");
+
+        /* Region overlay for Lock+Rgn */
+        if (app->show_region) {
+            SDL_FRect region = {
+                (float)app->region_rect.x,
+                (float)app->region_rect.y,
+                (float)app->region_rect.w,
+                (float)app->region_rect.h
+            };
+            SDL_SetRenderDrawColor(rend, 255, 80, 60, 60);
+            SDL_RenderFillRect(rend, &region);
+            SDL_SetRenderDrawColor(rend, 255, 80, 60, 200);
+            SDL_RenderRect(rend, &region);
+            SDL_RenderDebugText(rend, region.x + 4.f, region.y + 4.f, "LOCK REGION");
+        }
         break;
     }
     case CONSTRAINT_CONFINED: {
@@ -844,7 +919,7 @@ static void draw_frame(AppState *app)
     SDL_RenderFillRect(rend, &sep);
 
     /* ── vertical separator between lock and confine groups ── */
-    float sep_vx = PAD + (BW + PAD) * 2.f + PAD;  /* matches col_li + BW */
+    float sep_vx = PAD + (BW + PAD) * 3.f + PAD;  /* right of 3 lock buttons */
     SDL_SetRenderDrawColor(rend, 80, 100, 140, 120);
     SDL_RenderLine(rend, sep_vx, (float)CANVAS_H + 4.f,
                    sep_vx, (float)CANVAS_H + PANEL_H - 24.f);
@@ -869,7 +944,7 @@ static void draw_frame(AppState *app)
     SDL_SetRenderDrawColor(rend, 100, 120, 160, 200);
     float ky = (float)CANVAS_H + PANEL_H - 14.f;
     SDL_RenderDebugText(rend, PAD, ky,
-        "1:Lock1 2:LockP 3:Conf1  4:ConfP  H:Hint  R:Region  U:Unconstrain  Q:Quit");
+        "1:Lock1 2:LockP 5:Lock+Rgn  3:Conf1  4:ConfP  H:Hint  R:Region  U:Unconstrain  Q:Quit");
 
     SDL_RenderPresent(rend);
 }
@@ -894,6 +969,9 @@ static void handle_key(AppState *app, SDL_Keycode key, SDL_Keymod mod)
         break;
     case SDLK_4:
         do_confine_pointer(app, ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
+        break;
+    case SDLK_5:
+        do_lock_pointer_with_region(app, ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_ONESHOT);
         break;
     case SDLK_U:
         do_unconstrain(app);
