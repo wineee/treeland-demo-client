@@ -470,12 +470,7 @@ static void do_lock_pointer(AppState *app, enum zwp_pointer_constraints_v1_lifet
         lifetime);
     zwp_locked_pointer_v1_add_listener(app->locked_ptr, &locked_ptr_listener, app);
 
-    /* If we have a hint, set it */
-    if (app->hint_active) {
-        zwp_locked_pointer_v1_set_cursor_position_hint(app->locked_ptr,
-            wl_fixed_from_double(app->hint_x),
-            wl_fixed_from_double(app->hint_y));
-    }
+    /* Hint is NOT auto-applied — only set via H key */
 
     app->constraint_state = CONSTRAINT_LOCK_PENDING;
     wl_display_flush(app->wl_display);
@@ -521,12 +516,7 @@ static void do_lock_pointer_with_region(AppState *app, enum zwp_pointer_constrai
         lifetime);
     zwp_locked_pointer_v1_add_listener(app->locked_ptr, &locked_ptr_listener, app);
 
-    /* If we have a hint, set it */
-    if (app->hint_active) {
-        zwp_locked_pointer_v1_set_cursor_position_hint(app->locked_ptr,
-            wl_fixed_from_double(app->hint_x),
-            wl_fixed_from_double(app->hint_y));
-    }
+    /* Hint is NOT auto-applied — only set via H key */
 
     app->constraint_state = CONSTRAINT_LOCK_PENDING;
     wl_display_flush(app->wl_display);
@@ -573,15 +563,17 @@ static void do_set_cursor_hint(AppState *app)
         SDL_Log("Cursor hint requires active lock");
         return;
     }
-    /* Set hint to current cursor position */
-    app->hint_x = wl_fixed_to_double(app->cursor_sx);
-    app->hint_y = wl_fixed_to_double(app->cursor_sy);
+    /* Set hint to fixed position for testing */
+    wl_fixed_t hx = wl_fixed_from_double(100.0);
+    wl_fixed_t hy = wl_fixed_from_double(200.0);
+    app->hint_x = 100.0;
+    app->hint_y = 200.0;
     app->hint_active = true;
     zwp_locked_pointer_v1_set_cursor_position_hint(app->locked_ptr,
-        app->cursor_sx, app->cursor_sy);
+        hx, hy);
     wl_surface_commit(app->wl_surface);
     wl_display_flush(app->wl_display);
-    SDL_Log("Cursor hint set to (%.0f, %.0f)", app->hint_x, app->hint_y);
+    SDL_Log("Cursor hint set to (100, 200) — testing compositor warp");
 }
 
 static void do_toggle_region(AppState *app)
