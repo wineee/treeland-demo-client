@@ -3,6 +3,10 @@ build-*/
 !build-scripts/
 buildbot/
 /VERSION.txt
+
+# Nix
+result
+result-*
 __pycache__
 
 *.so
