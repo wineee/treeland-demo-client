@@ -13,13 +13,10 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
 
-          treeland-protocols = pkgs.callPackage ./nix/treeland-protocols.nix { };
-
           packages = {
             treeland-demo-client = pkgs.callPackage ./nix {
-              inherit nix-filter treeland-protocols;
+              inherit nix-filter;
             };
-            treeland-protocols = treeland-protocols;
             default = self.packages.${system}.treeland-demo-client;
           };
 

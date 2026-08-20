@@ -7,7 +7,6 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 find_package(PkgConfig REQUIRED)
 find_package(SDL3 REQUIRED CONFIG)
-find_package(TreelandProtocols REQUIRED CONFIG)
 
 pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
 pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED wayland-protocols)
@@ -20,10 +19,10 @@ endif()
 set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${GENERATED_DIR}")
 
-# ── protocol XML from system packages ─────────────────────────────────────
+# ── protocol XML from system packages / bundled protocols ─────────────────-
 set(XDG_SHELL_XML "${WAYLAND_PROTOCOLS_PREFIX}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml")
-set(WINE_MGMT_XML "${TREELAND_PROTOCOLS_DATA_DIR}/treeland-wine-window-management-unstable-v1.xml")
-set(WINE_STATE_XML "${TREELAND_PROTOCOLS_DATA_DIR}/treeland-wine-window-state-unstable-v1.xml")
+set(WINE_MGMT_XML "${CMAKE_CURRENT_SOURCE_DIR}/../protocols/treeland/treeland-wine-window-management-unstable-v1.xml")
+set(WINE_STATE_XML "${CMAKE_CURRENT_SOURCE_DIR}/../protocols/treeland/treeland-wine-window-state-unstable-v1.xml")
 
 if(NOT EXISTS "${XDG_SHELL_XML}")
     message(FATAL_ERROR "xdg-shell.xml not found: ${XDG_SHELL_XML}")
